@@ -1,0 +1,17 @@
+{
+  "name": "slides-to-pdf",
+  "version": "1.0.0",
+  "description": "Figma plugin to export slides as PDF with merge, compress, and reorder options",
+  "scripts": {
+    "build": "node build.js",
+    "watch": "node build.js --watch"
+  },
+  "devDependencies": {
+    "@figma/plugin-typings": "^1.90.0",
+    "esbuild": "^0.20.0",
+    "typescript": "^5.3.0"
+  },
+  "dependencies": {
+    "pdf-lib": "^1.17.1"
+  }
+}

@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Slides to PDF</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: Inter, -apple-system, BlinkMacSystemFont, sans-serif;
+      font-size: 12px;
+      color: #1a1a1a;
+      background: #f7f7f8;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* ── Header ── */
+    .header {
+      background: #fff;
+      padding: 12px 16px;
+      border-bottom: 1px solid #e8e8e8;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-shrink: 0;
+    }
+
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+    }
+
+    .logo-icon {
+      width: 22px;
+      height: 22px;
+      background: #e84545;
+      border-radius: 5px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: white;
+      font-size: 11px;
+      font-weight: 700;
+      flex-shrink: 0;
+    }
+
+    .logo-text {
+      font-size: 13px;
+      font-weight: 700;
+      color: #1a1a1a;
+      letter-spacing: -0.2px;
+    }
+
+    /* ── Selection hint ── */
+    .hint-bar {
+      background: #fff8e6;
+      border-bottom: 1px solid #fce9a0;
+      padding: 7px 16px;
+      font-size: 11px;
+      color: #8a6400;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+
+    /* ── Slide count bar ── */
+    .count-bar {
+      background: #fff;
+      padding: 8px 16px;
+      border-bottom: 1px solid #e8e8e8;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-shrink: 0;
+    }
+
+    .count-label {
+      font-size: 11px;
+      font-weight: 600;
+      color: #888;
+      text-transform: uppercase;
+      letter-spacing: 0.4px;
+    }
+
+    /* ── Empty state ── */
+    #empty-state {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      padding: 24px;
+      text-align: center;
+      background: #f7f7f8;
+    }
+
+    .empty-icon {
+      width: 48px;
+      height: 48px;
+      border-radius: 12px;
+      background: #fff;
+      border: 1.5px dashed #ddd;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 20px;
+      margin-bottom: 4px;
+    }
+
+    #empty-state h3 {
+      font-size: 13px;
+      font-weight: 600;
+      color: #1a1a1a;
+    }
+
+    #empty-state p {
+      font-size: 11px;
+      color: #aaa;
+      line-height: 1.5;
+      max-width: 200px;
+    }
+
+    /* ── Frame list ── */
+    #frame-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 8px;
+      background: #f7f7f8;
+      min-height: 0;
+      display: none;
+    }
+
+    #frame-list::-webkit-scrollbar { width: 4px; }
+    #frame-list::-webkit-scrollbar-track { background: transparent; }
+    #frame-list::-webkit-scrollbar-thumb { background: #ddd; border-radius: 4px; }
+
+    .frame-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: #fff;
+      border: 1px solid #eee;
+      border-radius: 8px;
+      padding: 9px 10px 9px 8px;
+      margin-bottom: 5px;
+      transition: border-color 0.15s, box-shadow 0.15s;
+      user-select: none;
+      cursor: default;
+    }
+
+    .frame-item:last-child { margin-bottom: 0; }
+    .frame-item:hover { border-color: #d4d4d4; box-shadow: 0 1px 4px rgba(0,0,0,0.06); }
+    .frame-item.dragging { opacity: 0.4; }
+    .frame-item.drag-over { border-color: #e84545; box-shadow: 0 0 0 2px rgba(232,69,69,0.15); }
+
+    .item-left {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      flex: 1;
+    }
+
+    .drag-handle {
+      color: #ccc;
+      cursor: grab;
+      font-size: 14px;
+      flex-shrink: 0;
+      padding: 0 2px;
+      line-height: 1;
+    }
+
+    .drag-handle:active { cursor: grabbing; color: #999; }
+
+    .slide-badge {
+      flex-shrink: 0;
+      width: 20px;
+      height: 20px;
+      border-radius: 5px;
+      background: #f0f0f0;
+      color: #888;
+      font-size: 10px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .slide-info {
+      min-width: 0;
+      flex: 1;
+    }
+
+    .slide-name {
+      display: block;
+      font-size: 12px;
+      font-weight: 500;
+      color: #1a1a1a;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .slide-dim {
+      display: block;
+      font-size: 10px;
+      color: #bbb;
+      margin-top: 1px;
+    }
+
+    .remove-btn {
+      flex-shrink: 0;
+      width: 22px;
+      height: 22px;
+      border: none;
+      background: transparent;
+      color: #ccc;
+      font-size: 10px;
+      cursor: pointer;
+      border-radius: 4px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 0.1s, color 0.1s;
+    }
+
+    .remove-btn:hover { background: #fee; color: #e84545; }
+
+    /* ── Options ── */
+    .options {
+      background: #fff;
+      border-top: 1px solid #e8e8e8;
+      padding: 10px 16px;
+      flex-shrink: 0;
+    }
+
+    .section-label {
+      font-size: 10px;
+      font-weight: 600;
+      color: #bbb;
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+      margin-bottom: 8px;
+    }
+
+    .option-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 5px 0;
+    }
+
+    .option-text strong {
+      display: block;
+      font-size: 12px;
+      color: #1a1a1a;
+      font-weight: 500;
+    }
+
+    .option-text span {
+      display: block;
+      font-size: 10px;
+      color: #bbb;
+    }
+
+    /* Toggle */
+    .toggle { position: relative; width: 32px; height: 18px; flex-shrink: 0; }
+    .toggle input { opacity: 0; width: 0; height: 0; position: absolute; }
+    .toggle-slider {
+      position: absolute; inset: 0; background: #e0e0e0; border-radius: 18px;
+      cursor: pointer; transition: background 0.2s;
+    }
+    .toggle-slider::before {
+      content: ''; position: absolute; width: 12px; height: 12px;
+      left: 3px; top: 3px; background: white; border-radius: 50%;
+      transition: transform 0.2s; box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+    }
+    .toggle input:checked + .toggle-slider { background: #e84545; }
+    .toggle input:checked + .toggle-slider::before { transform: translateX(14px); }
+
+    /* ── Progress ── */
+    .progress {
+      padding: 6px 16px;
+      background: #fff;
+      flex-shrink: 0;
+      display: none;
+      border-top: 1px solid #eee;
+    }
+
+    .progress-bg { background: #f0f0f0; border-radius: 4px; height: 3px; overflow: hidden; margin-bottom: 4px; }
+    .progress-bar { height: 100%; background: #e84545; border-radius: 4px; width: 0%; transition: width 0.3s ease; }
+    .progress-text { font-size: 10px; color: #aaa; text-align: center; }
+
+    /* ── Status ── */
+    .status {
+      font-size: 11px; min-height: 14px; color: #aaa;
+      padding: 4px 16px 2px; text-align: center; background: #fff; flex-shrink: 0;
+    }
+    .status.error  { color: #e84545; }
+    .status.success { color: #22a86b; }
+
+    /* ── Footer ── */
+    .footer {
+      padding: 10px 16px 14px;
+      background: #fff;
+      border-top: 1px solid #e8e8e8;
+      flex-shrink: 0;
+    }
+
+    /* ── Buttons ── */
+    button { cursor: pointer; border: none; border-radius: 6px; font-family: inherit; }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    .btn-ghost {
+      background: transparent; color: #888; font-size: 11px; font-weight: 500; padding: 4px 8px;
+      transition: background 0.15s, color 0.15s;
+    }
+    .btn-ghost:hover:not(:disabled) { background: #f0f0f0; color: #1a1a1a; }
+
+    .btn-primary {
+      background: #e84545; color: #fff; padding: 10px 16px; font-size: 12px;
+      font-weight: 600; width: 100%; border-radius: 8px;
+      transition: background 0.15s;
+    }
+    .btn-primary:hover:not(:disabled) { background: #d03c3c; }
+    .btn-primary:active:not(:disabled) { background: #bc3535; }
+  </style>
+</head>
+<body>
+
+  <!-- Header -->
+  <div class="header">
+    <div class="logo">
+      <div class="logo-icon">P</div>
+      <span class="logo-text">Slides to PDF</span>
+    </div>
+    <button class="btn-ghost" id="refresh">↻ Refresh</button>
+  </div>
+
+  <!-- Hint -->
+  <div class="hint-bar">
+    <span>💡</span>
+    <span>Select frames in the Figma canvas, then hit Refresh</span>
+  </div>
+
+  <!-- Count bar -->
+  <div class="count-bar">
+    <span class="count-label" id="frame-count">No frames selected</span>
+  </div>
+
+  <!-- Empty state -->
+  <div id="empty-state">
+    <div class="empty-icon">📄</div>
+    <h3>No frames selected</h3>
+    <p>Select one or more frames in the Figma canvas, then press Refresh</p>
+  </div>
+
+  <!-- Slide list (shown when frames selected) -->
+  <div id="frame-list"></div>
+
+  <!-- Options -->
+  <div class="options">
+    <div class="section-label">Export options</div>
+    <div class="option-row">
+      <div class="option-text">
+        <strong>Merge into one PDF</strong>
+        <span>Combine all slides into a single file</span>
+      </div>
+      <label class="toggle">
+        <input type="checkbox" id="merge" checked>
+        <span class="toggle-slider"></span>
+      </label>
+    </div>
+    <div class="option-row">
+      <div class="option-text">
+        <strong>Compress PDF</strong>
+        <span>Reduce file size using object streams</span>
+      </div>
+      <label class="toggle">
+        <input type="checkbox" id="compress">
+        <span class="toggle-slider"></span>
+      </label>
+    </div>
+  </div>
+
+  <!-- Progress -->
+  <div class="progress" id="progress">
+    <div class="progress-bg"><div class="progress-bar" id="progress-bar"></div></div>
+    <div class="progress-text" id="progress-text">Exporting…</div>
+  </div>
+
+  <!-- Status -->
+  <div class="status" id="status"></div>
+
+  <!-- Export button -->
+  <div class="footer">
+    <button class="btn-primary" id="export-btn" disabled>Select frames to export</button>
+  </div>
+
+<!-- INJECT_SCRIPT -->
+</body>
+</html>
