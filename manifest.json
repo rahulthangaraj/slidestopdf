@@ -1,8 +1,10 @@
 {
   "name": "Slides to PDF",
-  "id": "slides-to-pdf-plugin",
+  "id": "1607659653349661754",
   "api": "1.0.0",
   "main": "dist/code.js",
   "ui": "dist/ui.html",
-  "editorType": ["figma"]
+  "editorType": ["figma"],
+  "networkAccess": { "allowedDomains": ["none"] },
+  "documentAccess": "dynamic-page"
 }
