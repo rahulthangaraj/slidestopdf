@@ -124,7 +124,7 @@ function showProgress(show: boolean) {
 function updateProgress(current: number, total: number, name: string) {
   const pct = Math.round((current / total) * 100);
   progressBarEl.style.width = pct + '%';
-  progressTextEl.textContent = 'Exporting "' + name + '" (' + current + '/' + total + ')';
+  progressTextEl.textContent = 'Exporting frame ' + current + ' of ' + total + ' — "' + name + '"';
 }
 
 function setLoading(loading: boolean) {
@@ -168,14 +168,16 @@ window.onmessage = async (event: MessageEvent) => {
 
     case 'EXPORT_COMPLETE': {
       const results = msg.results as ExportResult[];
+      const errors = (msg.errors as string[]) || [];
       setStatus('Processing PDF...');
       try {
         await processPDFs(results);
         const merged = mergeToggle.checked;
-        setStatus(
-          'Done! ' + (merged ? '1 merged PDF' : results.length + ' PDF' + (results.length !== 1 ? 's' : '')) + ' downloaded.',
-          'success'
-        );
+        let doneMsg = 'Done! ' + (merged ? '1 merged PDF' : results.length + ' PDF' + (results.length !== 1 ? 's' : '')) + ' downloaded.';
+        if (errors.length > 0) {
+          doneMsg += ' (' + errors.length + ' frame' + (errors.length !== 1 ? 's' : '') + ' skipped)';
+        }
+        setStatus(doneMsg, errors.length > 0 ? 'default' : 'success');
       } catch (err) {
         setStatus('Error: ' + (err as Error).message, 'error');
       }
