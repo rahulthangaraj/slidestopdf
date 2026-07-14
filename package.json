@@ -12,6 +12,7 @@
     "typescript": "^5.3.0"
   },
   "dependencies": {
-    "pdf-lib": "^1.17.1"
+    "pdf-lib": "^1.17.1",
+    "posthog-js": "^1.399.5"
   }
 }
