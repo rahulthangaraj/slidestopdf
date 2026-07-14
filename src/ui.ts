@@ -1,4 +1,10 @@
 import { PDFDocument } from 'pdf-lib';
+import posthog from 'posthog-js/dist/module.full.no-external';
+
+posthog.init(process.env.POSTHOG_API_KEY as string, {
+  api_host: process.env.POSTHOG_HOST as string,
+  defaults: '2026-05-30',
+});
 
 interface Frame {
   id: string;
@@ -16,6 +22,7 @@ interface ExportResult {
 // State — user can reorder/remove within the plugin independently of Figma selection
 let frames: Frame[] = [];
 let dragSrcIndex: number | null = null;
+let pluginOpenedTracked = false;
 
 // DOM refs
 const frameListEl = document.getElementById('frame-list') as HTMLElement;
@@ -75,6 +82,7 @@ function renderFrameList() {
 
     // Remove button
     item.querySelector('.remove-btn')!.addEventListener('click', () => {
+      posthog.capture('frame_removed', { remaining_frame_count: frames.length - 1 });
       frames.splice(index, 1);
       renderFrameList();
     });
@@ -104,6 +112,7 @@ function renderFrameList() {
       if (dragSrcIndex === null || dragSrcIndex === index) return;
       const moved = frames.splice(dragSrcIndex, 1)[0];
       frames.splice(index, 0, moved);
+      posthog.capture('frame_reordered', { frame_count: frames.length });
       dragSrcIndex = null;
       renderFrameList();
     });
@@ -135,6 +144,7 @@ function setLoading(loading: boolean) {
 // Button events
 refreshBtn.addEventListener('click', () => {
   setStatus('Refreshing from selection...');
+  posthog.capture('frames_refreshed');
   postMessage({ type: 'GET_FRAMES' });
 });
 
@@ -144,6 +154,11 @@ exportBtn.addEventListener('click', () => {
   setLoading(true);
   showProgress(true);
   setStatus('Exporting frames from Figma...');
+  posthog.capture('export_started', {
+    frame_count: frames.length,
+    merge_enabled: mergeToggle.checked,
+    compress_enabled: compressToggle.checked,
+  });
   postMessage({ type: 'EXPORT_FRAMES', frameIds: ids });
 });
 
@@ -156,6 +171,10 @@ window.onmessage = async (event: MessageEvent) => {
 
     case 'FRAMES_LIST': {
       frames = (msg.frames as Frame[]) || [];
+      if (!pluginOpenedTracked) {
+        pluginOpenedTracked = true;
+        posthog.capture('plugin_opened', { initial_frame_count: frames.length });
+      }
       setStatus('');
       renderFrameList();
       break;
@@ -178,8 +197,16 @@ window.onmessage = async (event: MessageEvent) => {
           doneMsg += ' (' + errors.length + ' frame' + (errors.length !== 1 ? 's' : '') + ' skipped)';
         }
         setStatus(doneMsg, errors.length > 0 ? 'default' : 'success');
+        posthog.capture('export_completed', {
+          frame_count: results.length,
+          skipped_count: errors.length,
+          merge_enabled: merged,
+          compress_enabled: compressToggle.checked,
+        });
       } catch (err) {
         setStatus('Error: ' + (err as Error).message, 'error');
+        posthog.capture('export_failed', { error_message: (err as Error).message });
+        posthog.captureException(err as Error);
       }
       showProgress(false);
       setLoading(false);
@@ -189,6 +216,7 @@ window.onmessage = async (event: MessageEvent) => {
 
     case 'EXPORT_ERROR': {
       setStatus(msg.message as string, 'error');
+      posthog.capture('export_failed', { error_message: msg.message as string });
       showProgress(false);
       setLoading(false);
       renderFrameList();
