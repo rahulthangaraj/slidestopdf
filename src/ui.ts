@@ -141,6 +141,15 @@ function setLoading(loading: boolean) {
   refreshBtn.disabled = loading;
 }
 
+// Toggle events
+mergeToggle.addEventListener('change', () => {
+  posthog.capture('merge_toggle_changed', { enabled: mergeToggle.checked });
+});
+
+compressToggle.addEventListener('change', () => {
+  posthog.capture('compress_toggle_changed', { enabled: compressToggle.checked });
+});
+
 // Button events
 refreshBtn.addEventListener('click', () => {
   setStatus('Refreshing from selection...');
