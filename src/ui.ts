@@ -10,7 +10,25 @@ if (posthogKey) {
   });
 }
 
-const PLUGIN_VERSION = '1.1.2';
+const PLUGIN_VERSION = '1.1.3';
+
+function track(event: string, props?: Record<string, unknown>) {
+  if (!posthogKey) return;
+  try {
+    posthog.capture(event, props);
+  } catch {
+    // Analytics must never break export functionality.
+  }
+}
+
+function trackException(err: Error) {
+  if (!posthogKey) return;
+  try {
+    posthog.captureException(err);
+  } catch {
+    // ignore
+  }
+}
 
 interface Frame {
   id: string;
@@ -107,7 +125,7 @@ function renderFrameList() {
     dragHandle.addEventListener('mouseup', () => { item.draggable = false; });
 
     item.querySelector('.remove-btn')!.addEventListener('click', () => {
-      posthog.capture('frame_removed', { remaining_frame_count: frames.length - 1 });
+      track('frame_removed', { remaining_frame_count: frames.length - 1 });
       frames.splice(index, 1);
       renderFrameList();
     });
@@ -136,7 +154,7 @@ function renderFrameList() {
       if (dragSrcIndex === null || dragSrcIndex === index) return;
       const moved = frames.splice(dragSrcIndex, 1)[0];
       frames.splice(index, 0, moved);
-      posthog.capture('frame_reordered', { frame_count: frames.length });
+      track('frame_reordered', { frame_count: frames.length });
       dragSrcIndex = null;
       renderFrameList();
     });
@@ -242,7 +260,7 @@ async function finishExport() {
     }
 
     setStatus(doneMsg, errors.length > 0 ? 'default' : 'success');
-    posthog.capture('export_completed', {
+    track('export_completed', {
       frame_count: successCount,
       skipped_count: errors.length,
       merge_enabled: mergeToggle.checked,
@@ -251,8 +269,8 @@ async function finishExport() {
     });
   } catch (err) {
     setStatus('Error: ' + (err as Error).message, 'error');
-    posthog.capture('export_failed', { error_message: (err as Error).message });
-    posthog.captureException(err as Error);
+    track('export_failed', { error_message: (err as Error).message });
+    trackException(err as Error);
   }
 
   activeExport = null;
@@ -276,7 +294,7 @@ function downloadFile(bytes: Uint8Array, filename: string) {
 // Button events
 refreshBtn.addEventListener('click', () => {
   setStatus('Refreshing from selection...');
-  posthog.capture('frames_refreshed');
+  track('frames_refreshed');
   postMessage({ type: 'GET_FRAMES' });
 });
 
@@ -286,7 +304,7 @@ exportBtn.addEventListener('click', () => {
   setLoading(true);
   showProgress(true);
   setStatus('Exporting frames from Figma...');
-  posthog.capture('export_started', {
+  track('export_started', {
     frame_count: frames.length,
     merge_enabled: mergeToggle.checked,
     compress_enabled: compressToggle.checked,
@@ -303,12 +321,15 @@ window.onmessage = async (event: MessageEvent) => {
 
     case 'FRAMES_LIST': {
       frames = (msg.frames as Frame[]) || [];
-      if (!pluginOpenedTracked) {
-        pluginOpenedTracked = true;
-        posthog.capture('plugin_opened', { initial_frame_count: frames.length });
-      }
       setStatus('');
       renderFrameList();
+      if (!pluginOpenedTracked) {
+        pluginOpenedTracked = true;
+        track('plugin_opened', { initial_frame_count: frames.length });
+      }
+      if (msg.error) {
+        setStatus('Selection error: ' + (msg.error as string), 'error');
+      }
       break;
     }
 
@@ -344,8 +365,8 @@ window.onmessage = async (event: MessageEvent) => {
         if (activeExport) {
           activeExport.errors.push('Failed to process "' + result.name + '": ' + errMsg);
         }
-        posthog.capture('export_failed', { error_message: errMsg });
-        posthog.captureException(err as Error);
+        track('export_failed', { error_message: errMsg });
+        trackException(err as Error);
       }
       break;
     }
@@ -360,7 +381,7 @@ window.onmessage = async (event: MessageEvent) => {
 
     case 'EXPORT_ERROR': {
       setStatus(msg.message as string, 'error');
-      posthog.capture('export_failed', { error_message: msg.message as string });
+      track('export_failed', { error_message: msg.message as string });
       activeExport = null;
       showProgress(false);
       setLoading(false);

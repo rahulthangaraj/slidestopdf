@@ -55,23 +55,16 @@ function isExpandableContainer(node: SceneNode): boolean {
     node.type === 'SECTION' ||
     node.type === 'SLIDE_ROW' ||
     node.type === 'SLIDE_GRID' ||
-    node.type === 'GROUP' ||
-    node.type === 'FRAME'
+    node.type === 'GROUP'
   );
 }
 
-function boundsContainsPoint(bounds: Rect, node: SceneNode): boolean {
-  const nodeBounds = node.absoluteBoundingBox;
-  if (!nodeBounds) return false;
-
-  const centerX = nodeBounds.x + nodeBounds.width / 2;
-  const centerY = nodeBounds.y + nodeBounds.height / 2;
-
+function boundsIntersect(a: Rect, b: Rect): boolean {
   return (
-    centerX >= bounds.x &&
-    centerX <= bounds.x + bounds.width &&
-    centerY >= bounds.y &&
-    centerY <= bounds.y + bounds.height
+    a.x < b.x + b.width &&
+    a.x + a.width > b.x &&
+    a.y < b.y + b.height &&
+    a.y + a.height > b.y
   );
 }
 
@@ -85,10 +78,6 @@ function sortSlidesByPosition(slides: ExportableSlide[]): ExportableSlide[] {
   });
 }
 
-/**
- * Walk descendants of a container and collect slide-level nodes.
- * Nested exportable nodes inside an existing slide are not listed separately.
- */
 function collectSlidesUnderContainer(container: SceneNode): ExportableSlide[] {
   const slides: ExportableSlide[] = [];
 
@@ -123,11 +112,6 @@ function collectSlidesUnderContainer(container: SceneNode): ExportableSlide[] {
   return sortSlidesByPosition(slides);
 }
 
-/**
- * Figma sections often visually group frames that are not parented under the
- * section node. Also collect exportable nodes whose center lies inside the
- * section bounds on the current page.
- */
 function collectSlidesForSection(section: SectionNode): ExportableSlide[] {
   const slides: ExportableSlide[] = [];
   const seen = new Set<string>();
@@ -145,11 +129,20 @@ function collectSlidesForSection(section: SectionNode): ExportableSlide[] {
 
   const bounds = section.absoluteBoundingBox;
   if (bounds) {
-  const candidates = figma.currentPage.findAll((n) => isExportableSlide(n));
-    for (const node of candidates) {
-      if (boundsContainsPoint(bounds, node) && isTopLevelSlideOnPage(node)) {
-        addSlide(node);
+    try {
+      const candidates = figma.currentPage.findAll((n) => isExportableSlide(n));
+      for (const node of candidates) {
+        const nodeBounds = node.absoluteBoundingBox;
+        if (
+          nodeBounds &&
+          boundsIntersect(bounds, nodeBounds) &&
+          isTopLevelSlideOnPage(node)
+        ) {
+          addSlide(node);
+        }
       }
+    } catch {
+      // findAll can fail before the page is fully loaded — tree results still apply.
     }
   }
 
@@ -163,85 +156,62 @@ function collectSlidesFromContainer(container: SceneNode): ExportableSlide[] {
   return collectSlidesUnderContainer(container);
 }
 
-function shouldExpandContainer(node: SceneNode): boolean {
-  if (!isExpandableContainer(node)) return false;
-  if (node.type === 'FRAME') {
-    return collectSlidesFromContainer(node).length > 0;
-  }
-  return true;
-}
-
-function shouldAutoExpandOnCanvas(node: SceneNode): boolean {
-  return node.type === 'SECTION' || node.type === 'SLIDE_ROW';
-}
-
 function getSelectedFrames(): FrameInfo[] {
   const seen = new Set<string>();
   const result: FrameInfo[] = [];
 
-  for (const node of figma.currentPage.selection) {
-    if (shouldExpandContainer(node)) {
-      const innerSlides = collectSlidesFromContainer(node);
-      if (innerSlides.length > 0) {
-        for (const slide of innerSlides) {
-          if (!seen.has(slide.id)) {
-            seen.add(slide.id);
-            result.push(toInfo(slide));
-          }
-        }
-        continue;
-      }
+  function addSlide(slide: ExportableSlide) {
+    if (!seen.has(slide.id)) {
+      seen.add(slide.id);
+      result.push(toInfo(slide));
     }
+  }
 
+  const selection = figma.currentPage.selection;
+
+  // 1. Always honor directly selected frames/slides first.
+  for (const node of selection) {
     if (isExportableSlide(node)) {
-      if (!seen.has(node.id)) {
-        seen.add(node.id);
-        result.push(toInfo(node));
-      }
+      addSlide(node);
+    }
+  }
+
+  // 2. Expand sections, slide rows, groups, etc.
+  for (const node of selection) {
+    if (!isExpandableContainer(node)) continue;
+    for (const slide of collectSlidesFromContainer(node)) {
+      addSlide(slide);
     }
   }
 
   return result;
 }
 
-function collectSlidesFromAutoExpandable(selection: readonly SceneNode[]): ExportableSlide[] {
-  const slides: ExportableSlide[] = [];
-  const seen = new Set<string>();
-
-  for (const node of selection) {
-    if (!shouldAutoExpandOnCanvas(node)) continue;
-    for (const slide of collectSlidesFromContainer(node)) {
-      if (!seen.has(slide.id)) {
-        seen.add(slide.id);
-        slides.push(slide);
-      }
-    }
-  }
-
-  return sortSlidesByPosition(slides);
-}
-
 function postFramesList() {
-  figma.ui.postMessage({ type: 'FRAMES_LIST', frames: getSelectedFrames() });
+  try {
+    const frames = getSelectedFrames();
+    figma.ui.postMessage({ type: 'FRAMES_LIST', frames });
+  } catch (err) {
+    const message = (err && typeof err === 'object' && 'message' in err)
+      ? (err as Error).message
+      : String(err);
+    figma.ui.postMessage({
+      type: 'FRAMES_LIST',
+      frames: [],
+      error: message,
+    });
+  }
 }
 
 function handleSelectionChange() {
-  const selection = figma.currentPage.selection;
-
-  const expandableOnly =
-    selection.length > 0 &&
-    selection.every((node) => shouldAutoExpandOnCanvas(node));
-
-  if (expandableOnly) {
-    const slides = collectSlidesFromAutoExpandable(selection);
-    if (slides.length > 0) {
-      figma.currentPage.selection = slides;
-      postFramesList();
-      return;
-    }
+  try {
+    postFramesList();
+  } catch (err) {
+    const message = (err && typeof err === 'object' && 'message' in err)
+      ? (err as Error).message
+      : String(err);
+    figma.notify('Slides to PDF: ' + message, { error: true });
   }
-
-  postFramesList();
 }
 
 interface ExportPayload {
@@ -303,8 +273,15 @@ async function exportSlideBytes(node: ExportableSlide): Promise<ExportPayload> {
 }
 
 (async () => {
-  await figma.currentPage.loadAsync();
-  handleSelectionChange();
+  try {
+    await figma.currentPage.loadAsync();
+    handleSelectionChange();
+  } catch (err) {
+    const message = (err && typeof err === 'object' && 'message' in err)
+      ? (err as Error).message
+      : String(err);
+    figma.notify('Slides to PDF failed to load page: ' + message, { error: true });
+  }
 })();
 
 figma.on('selectionchange', () => {
