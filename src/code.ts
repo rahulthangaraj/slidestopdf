@@ -41,6 +41,15 @@ function isTopLevelSlideInContainer(slide: ExportableSlide, container: SceneNode
   return true;
 }
 
+function isTopLevelSlideOnPage(slide: ExportableSlide): boolean {
+  let parent = slide.parent;
+  while (parent && parent.type !== 'PAGE') {
+    if (isExportableSlide(parent)) return false;
+    parent = parent.parent;
+  }
+  return true;
+}
+
 function isExpandableContainer(node: SceneNode): boolean {
   return (
     node.type === 'SECTION' ||
@@ -51,20 +60,33 @@ function isExpandableContainer(node: SceneNode): boolean {
   );
 }
 
-function shouldExpandContainer(node: SceneNode): boolean {
-  if (!isExpandableContainer(node)) return false;
-  if (node.type === 'FRAME') {
-    return collectSlidesUnderContainer(node).length > 0;
-  }
-  return true;
+function boundsContainsPoint(bounds: Rect, node: SceneNode): boolean {
+  const nodeBounds = node.absoluteBoundingBox;
+  if (!nodeBounds) return false;
+
+  const centerX = nodeBounds.x + nodeBounds.width / 2;
+  const centerY = nodeBounds.y + nodeBounds.height / 2;
+
+  return (
+    centerX >= bounds.x &&
+    centerX <= bounds.x + bounds.width &&
+    centerY >= bounds.y &&
+    centerY <= bounds.y + bounds.height
+  );
 }
 
-function shouldAutoExpandOnCanvas(node: SceneNode): boolean {
-  return node.type === 'SECTION' || node.type === 'SLIDE_ROW';
+function sortSlidesByPosition(slides: ExportableSlide[]): ExportableSlide[] {
+  return slides.slice().sort((a, b) => {
+    const ab = a.absoluteBoundingBox;
+    const bb = b.absoluteBoundingBox;
+    if (!ab || !bb) return 0;
+    if (Math.abs(ab.y - bb.y) > 40) return ab.y - bb.y;
+    return ab.x - bb.x;
+  });
 }
 
 /**
- * Collect slide-level nodes under a container (preserves order).
+ * Walk descendants of a container and collect slide-level nodes.
  * Nested exportable nodes inside an existing slide are not listed separately.
  */
 function collectSlidesUnderContainer(container: SceneNode): ExportableSlide[] {
@@ -77,7 +99,7 @@ function collectSlidesUnderContainer(container: SceneNode): ExportableSlide[] {
         slides.push(slide);
       }
     }
-    return slides;
+    return sortSlidesByPosition(slides);
   }
 
   function walk(node: SceneNode) {
@@ -98,7 +120,59 @@ function collectSlidesUnderContainer(container: SceneNode): ExportableSlide[] {
     }
   }
 
-  return slides;
+  return sortSlidesByPosition(slides);
+}
+
+/**
+ * Figma sections often visually group frames that are not parented under the
+ * section node. Also collect exportable nodes whose center lies inside the
+ * section bounds on the current page.
+ */
+function collectSlidesForSection(section: SectionNode): ExportableSlide[] {
+  const slides: ExportableSlide[] = [];
+  const seen = new Set<string>();
+
+  function addSlide(slide: ExportableSlide) {
+    if (!seen.has(slide.id)) {
+      seen.add(slide.id);
+      slides.push(slide);
+    }
+  }
+
+  for (const slide of collectSlidesUnderContainer(section)) {
+    addSlide(slide);
+  }
+
+  const bounds = section.absoluteBoundingBox;
+  if (bounds) {
+  const candidates = figma.currentPage.findAll((n) => isExportableSlide(n));
+    for (const node of candidates) {
+      if (boundsContainsPoint(bounds, node) && isTopLevelSlideOnPage(node)) {
+        addSlide(node);
+      }
+    }
+  }
+
+  return sortSlidesByPosition(slides);
+}
+
+function collectSlidesFromContainer(container: SceneNode): ExportableSlide[] {
+  if (container.type === 'SECTION') {
+    return collectSlidesForSection(container);
+  }
+  return collectSlidesUnderContainer(container);
+}
+
+function shouldExpandContainer(node: SceneNode): boolean {
+  if (!isExpandableContainer(node)) return false;
+  if (node.type === 'FRAME') {
+    return collectSlidesFromContainer(node).length > 0;
+  }
+  return true;
+}
+
+function shouldAutoExpandOnCanvas(node: SceneNode): boolean {
+  return node.type === 'SECTION' || node.type === 'SLIDE_ROW';
 }
 
 function getSelectedFrames(): FrameInfo[] {
@@ -107,7 +181,7 @@ function getSelectedFrames(): FrameInfo[] {
 
   for (const node of figma.currentPage.selection) {
     if (shouldExpandContainer(node)) {
-      const innerSlides = collectSlidesUnderContainer(node);
+      const innerSlides = collectSlidesFromContainer(node);
       if (innerSlides.length > 0) {
         for (const slide of innerSlides) {
           if (!seen.has(slide.id)) {
@@ -136,7 +210,7 @@ function collectSlidesFromAutoExpandable(selection: readonly SceneNode[]): Expor
 
   for (const node of selection) {
     if (!shouldAutoExpandOnCanvas(node)) continue;
-    for (const slide of collectSlidesUnderContainer(node)) {
+    for (const slide of collectSlidesFromContainer(node)) {
       if (!seen.has(slide.id)) {
         seen.add(slide.id);
         slides.push(slide);
@@ -144,7 +218,7 @@ function collectSlidesFromAutoExpandable(selection: readonly SceneNode[]): Expor
     }
   }
 
-  return slides;
+  return sortSlidesByPosition(slides);
 }
 
 function postFramesList() {
@@ -162,6 +236,7 @@ function handleSelectionChange() {
     const slides = collectSlidesFromAutoExpandable(selection);
     if (slides.length > 0) {
       figma.currentPage.selection = slides;
+      postFramesList();
       return;
     }
   }
