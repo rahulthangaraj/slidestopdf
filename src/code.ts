@@ -32,21 +32,53 @@ function toInfo(node: ExportableSlide): FrameInfo {
   };
 }
 
+function isTopLevelSlideInContainer(slide: ExportableSlide, container: SceneNode): boolean {
+  let parent = slide.parent;
+  while (parent && parent !== container) {
+    if (isExportableSlide(parent)) return false;
+    parent = parent.parent;
+  }
+  return true;
+}
+
 function isExpandableContainer(node: SceneNode): boolean {
   return (
     node.type === 'SECTION' ||
     node.type === 'SLIDE_ROW' ||
     node.type === 'SLIDE_GRID' ||
-    node.type === 'GROUP'
+    node.type === 'GROUP' ||
+    node.type === 'FRAME'
   );
 }
 
+function shouldExpandContainer(node: SceneNode): boolean {
+  if (!isExpandableContainer(node)) return false;
+  if (node.type === 'FRAME') {
+    return collectSlidesUnderContainer(node).length > 0;
+  }
+  return true;
+}
+
+function shouldAutoExpandOnCanvas(node: SceneNode): boolean {
+  return node.type === 'SECTION' || node.type === 'SLIDE_ROW';
+}
+
 /**
- * Walk descendants of a container and collect slide-level nodes.
- * Stops at each slide boundary so nested frames inside a slide are not listed separately.
+ * Collect slide-level nodes under a container (preserves order).
+ * Nested exportable nodes inside an existing slide are not listed separately.
  */
 function collectSlidesUnderContainer(container: SceneNode): ExportableSlide[] {
   const slides: ExportableSlide[] = [];
+
+  if (container.type === 'SECTION' && 'findAll' in container) {
+    const matches = (container as SectionNode).findAll((n) => isExportableSlide(n));
+    for (const slide of matches) {
+      if (isTopLevelSlideInContainer(slide, container)) {
+        slides.push(slide);
+      }
+    }
+    return slides;
+  }
 
   function walk(node: SceneNode) {
     if (isExportableSlide(node)) {
@@ -74,10 +106,10 @@ function getSelectedFrames(): FrameInfo[] {
   const result: FrameInfo[] = [];
 
   for (const node of figma.currentPage.selection) {
-    if (isExpandableContainer(node)) {
-      const slides = collectSlidesUnderContainer(node);
-      if (slides.length > 0) {
-        for (const slide of slides) {
+    if (shouldExpandContainer(node)) {
+      const innerSlides = collectSlidesUnderContainer(node);
+      if (innerSlides.length > 0) {
+        for (const slide of innerSlides) {
           if (!seen.has(slide.id)) {
             seen.add(slide.id);
             result.push(toInfo(slide));
@@ -96,6 +128,45 @@ function getSelectedFrames(): FrameInfo[] {
   }
 
   return result;
+}
+
+function collectSlidesFromAutoExpandable(selection: readonly SceneNode[]): ExportableSlide[] {
+  const slides: ExportableSlide[] = [];
+  const seen = new Set<string>();
+
+  for (const node of selection) {
+    if (!shouldAutoExpandOnCanvas(node)) continue;
+    for (const slide of collectSlidesUnderContainer(node)) {
+      if (!seen.has(slide.id)) {
+        seen.add(slide.id);
+        slides.push(slide);
+      }
+    }
+  }
+
+  return slides;
+}
+
+function postFramesList() {
+  figma.ui.postMessage({ type: 'FRAMES_LIST', frames: getSelectedFrames() });
+}
+
+function handleSelectionChange() {
+  const selection = figma.currentPage.selection;
+
+  const expandableOnly =
+    selection.length > 0 &&
+    selection.every((node) => shouldAutoExpandOnCanvas(node));
+
+  if (expandableOnly) {
+    const slides = collectSlidesFromAutoExpandable(selection);
+    if (slides.length > 0) {
+      figma.currentPage.selection = slides;
+      return;
+    }
+  }
+
+  postFramesList();
 }
 
 interface ExportPayload {
@@ -156,16 +227,13 @@ async function exportSlideBytes(node: ExportableSlide): Promise<ExportPayload> {
   }
 }
 
-function postFramesList() {
-  figma.ui.postMessage({ type: 'FRAMES_LIST', frames: getSelectedFrames() });
-}
+(async () => {
+  await figma.currentPage.loadAsync();
+  handleSelectionChange();
+})();
 
-// Send initial selection on startup
-postFramesList();
-
-// Auto-update when user changes selection in the canvas
 figma.on('selectionchange', () => {
-  postFramesList();
+  handleSelectionChange();
 });
 
 figma.ui.onmessage = async (msg: { type: string; frameIds?: string[] }) => {

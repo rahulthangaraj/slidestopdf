@@ -1,10 +1,16 @@
 import { PDFDocument } from 'pdf-lib';
 import posthog from 'posthog-js/dist/module.full.no-external';
 
-posthog.init(process.env.POSTHOG_API_KEY as string, {
-  api_host: process.env.POSTHOG_HOST as string,
-  defaults: '2026-05-30',
-});
+const posthogKey = process.env.POSTHOG_API_KEY as string;
+const posthogHost = process.env.POSTHOG_HOST as string;
+if (posthogKey) {
+  posthog.init(posthogKey, {
+    api_host: posthogHost || 'https://us.i.posthog.com',
+    defaults: '2026-05-30',
+  });
+}
+
+const PLUGIN_VERSION = '1.1.1';
 
 interface Frame {
   id: string;
@@ -48,6 +54,11 @@ const progressBarEl = document.getElementById('progress-bar') as HTMLElement;
 const progressTextEl = document.getElementById('progress-text') as HTMLElement;
 const frameCountEl = document.getElementById('frame-count') as HTMLElement;
 const emptyStateEl = document.getElementById('empty-state') as HTMLElement;
+const versionEl = document.getElementById('plugin-version') as HTMLElement;
+
+if (versionEl) {
+  versionEl.textContent = 'v' + PLUGIN_VERSION;
+}
 
 function postMessage(msg: Record<string, unknown>) {
   parent.postMessage({ pluginMessage: msg }, '*');
