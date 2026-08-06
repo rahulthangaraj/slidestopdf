@@ -13,16 +13,28 @@ interface Frame {
   height: number;
 }
 
-interface ExportResult {
+interface FrameExportResult {
   id: string;
   name: string;
-  data: number[];
+  format: 'pdf' | 'jpeg';
+  width: number;
+  height: number;
+  data: Uint8Array | number[];
+}
+
+interface ActiveExport {
+  mergedDoc: PDFDocument | null;
+  successCount: number;
+  errors: string[];
+  total: number;
+  usedImageFallback: boolean;
 }
 
 // State — user can reorder/remove within the plugin independently of Figma selection
 let frames: Frame[] = [];
 let dragSrcIndex: number | null = null;
 let pluginOpenedTracked = false;
+let activeExport: ActiveExport | null = null;
 
 // DOM refs
 const frameListEl = document.getElementById('frame-list') as HTMLElement;
@@ -39,6 +51,10 @@ const emptyStateEl = document.getElementById('empty-state') as HTMLElement;
 
 function postMessage(msg: Record<string, unknown>) {
   parent.postMessage({ pluginMessage: msg }, '*');
+}
+
+function toUint8Array(data: Uint8Array | number[]): Uint8Array {
+  return data instanceof Uint8Array ? data : new Uint8Array(data);
 }
 
 function renderFrameList() {
@@ -75,19 +91,16 @@ function renderFrameList() {
       '</div>' +
       '<button class="remove-btn" title="Remove from export" data-index="' + index + '">✕</button>';
 
-    // Enable drag only from handle
     const dragHandle = item.querySelector('.drag-handle') as HTMLElement;
     dragHandle.addEventListener('mousedown', () => { item.draggable = true; });
     dragHandle.addEventListener('mouseup', () => { item.draggable = false; });
 
-    // Remove button
     item.querySelector('.remove-btn')!.addEventListener('click', () => {
       posthog.capture('frame_removed', { remaining_frame_count: frames.length - 1 });
       frames.splice(index, 1);
       renderFrameList();
     });
 
-    // Drag events
     item.addEventListener('dragstart', (e) => {
       dragSrcIndex = index;
       item.classList.add('dragging');
@@ -141,6 +154,114 @@ function setLoading(loading: boolean) {
   refreshBtn.disabled = loading;
 }
 
+async function addPdfBytesToDoc(doc: PDFDocument, bytes: Uint8Array) {
+  const pdf = await PDFDocument.load(bytes, { ignoreEncryption: true });
+  const pages = await doc.copyPages(pdf, pdf.getPageIndices());
+  pages.forEach(page => doc.addPage(page));
+}
+
+async function addJpegAsPdfPage(doc: PDFDocument, bytes: Uint8Array, width: number, height: number) {
+  const image = await doc.embedJpg(bytes);
+  const page = doc.addPage([width, height]);
+  page.drawImage(image, { x: 0, y: 0, width, height });
+}
+
+async function createSingleSlidePdf(result: FrameExportResult, compress: boolean): Promise<Uint8Array> {
+  const bytes = toUint8Array(result.data);
+
+  if (result.format === 'pdf') {
+    if (!compress) return bytes;
+    const pdf = await PDFDocument.load(bytes, { ignoreEncryption: true });
+    return pdf.save({ useObjectStreams: true });
+  }
+
+  const doc = await PDFDocument.create();
+  await addJpegAsPdfPage(doc, bytes, result.width, result.height);
+  return doc.save({ useObjectStreams: compress });
+}
+
+async function processFrameResult(result: FrameExportResult) {
+  const merge = mergeToggle.checked;
+  const compress = compressToggle.checked;
+
+  if (merge && activeExport && activeExport.mergedDoc) {
+    if (result.format === 'pdf') {
+      await addPdfBytesToDoc(activeExport.mergedDoc, toUint8Array(result.data));
+    } else {
+      activeExport.usedImageFallback = true;
+      await addJpegAsPdfPage(
+        activeExport.mergedDoc,
+        toUint8Array(result.data),
+        result.width,
+        result.height,
+      );
+    }
+    return;
+  }
+
+  const pdfBytes = await createSingleSlidePdf(result, compress);
+  const safeName = result.name.replace(/[^\w\s\-]/g, '_').trim() || 'slide';
+  downloadFile(pdfBytes, safeName + '.pdf');
+}
+
+async function finishExport() {
+  if (!activeExport) return;
+
+  const { mergedDoc, successCount, errors, usedImageFallback } = activeExport;
+  const compress = compressToggle.checked;
+
+  try {
+    if (mergeToggle.checked && mergedDoc) {
+      if (compress) setStatus('Compressing merged PDF...');
+      const finalBytes = await mergedDoc.save({ useObjectStreams: compress });
+      downloadFile(finalBytes, 'slides.pdf');
+    }
+
+    let doneMsg = 'Done! ' + (
+      mergeToggle.checked
+        ? '1 merged PDF'
+        : successCount + ' PDF' + (successCount !== 1 ? 's' : '')
+    ) + ' downloaded.';
+
+    if (usedImageFallback) {
+      doneMsg += ' Some slides used image fallback for large files.';
+    }
+    if (errors.length > 0) {
+      doneMsg += ' (' + errors.length + ' frame' + (errors.length !== 1 ? 's' : '') + ' skipped)';
+    }
+
+    setStatus(doneMsg, errors.length > 0 ? 'default' : 'success');
+    posthog.capture('export_completed', {
+      frame_count: successCount,
+      skipped_count: errors.length,
+      merge_enabled: mergeToggle.checked,
+      compress_enabled: compress,
+      used_image_fallback: usedImageFallback,
+    });
+  } catch (err) {
+    setStatus('Error: ' + (err as Error).message, 'error');
+    posthog.capture('export_failed', { error_message: (err as Error).message });
+    posthog.captureException(err as Error);
+  }
+
+  activeExport = null;
+  showProgress(false);
+  setLoading(false);
+  renderFrameList();
+}
+
+function downloadFile(bytes: Uint8Array, filename: string) {
+  const blob = new Blob([bytes], { type: 'application/pdf' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 // Button events
 refreshBtn.addEventListener('click', () => {
   setStatus('Refreshing from selection...');
@@ -180,43 +301,56 @@ window.onmessage = async (event: MessageEvent) => {
       break;
     }
 
+    case 'EXPORT_START': {
+      activeExport = {
+        mergedDoc: mergeToggle.checked ? await PDFDocument.create() : null,
+        successCount: 0,
+        errors: [],
+        total: msg.total as number,
+        usedImageFallback: false,
+      };
+      break;
+    }
+
     case 'EXPORT_PROGRESS': {
       updateProgress(msg.current as number, msg.total as number, msg.name as string);
       break;
     }
 
-    case 'EXPORT_COMPLETE': {
-      const results = msg.results as ExportResult[];
-      const errors = (msg.errors as string[]) || [];
-      setStatus('Processing PDF...');
-      try {
-        await processPDFs(results);
-        const merged = mergeToggle.checked;
-        let doneMsg = 'Done! ' + (merged ? '1 merged PDF' : results.length + ' PDF' + (results.length !== 1 ? 's' : '')) + ' downloaded.';
-        if (errors.length > 0) {
-          doneMsg += ' (' + errors.length + ' frame' + (errors.length !== 1 ? 's' : '') + ' skipped)';
+    case 'EXPORT_FRAME_DONE': {
+      const result = msg.result as FrameExportResult;
+      if (activeExport) {
+        activeExport.successCount++;
+        if (result.format === 'jpeg') {
+          activeExport.usedImageFallback = true;
         }
-        setStatus(doneMsg, errors.length > 0 ? 'default' : 'success');
-        posthog.capture('export_completed', {
-          frame_count: results.length,
-          skipped_count: errors.length,
-          merge_enabled: merged,
-          compress_enabled: compressToggle.checked,
-        });
+      }
+      setStatus('Processing slide ' + (msg.current as number) + ' of ' + (msg.total as number) + '...');
+      try {
+        await processFrameResult(result);
       } catch (err) {
-        setStatus('Error: ' + (err as Error).message, 'error');
-        posthog.capture('export_failed', { error_message: (err as Error).message });
+        const errMsg = (err as Error).message;
+        if (activeExport) {
+          activeExport.errors.push('Failed to process "' + result.name + '": ' + errMsg);
+        }
+        posthog.capture('export_failed', { error_message: errMsg });
         posthog.captureException(err as Error);
       }
-      showProgress(false);
-      setLoading(false);
-      renderFrameList();
+      break;
+    }
+
+    case 'EXPORT_ALL_DONE': {
+      if (activeExport) {
+        activeExport.errors.push(...((msg.errors as string[]) || []));
+      }
+      await finishExport();
       break;
     }
 
     case 'EXPORT_ERROR': {
       setStatus(msg.message as string, 'error');
       posthog.capture('export_failed', { error_message: msg.message as string });
+      activeExport = null;
       showProgress(false);
       setLoading(false);
       renderFrameList();
@@ -224,49 +358,3 @@ window.onmessage = async (event: MessageEvent) => {
     }
   }
 };
-
-async function processPDFs(results: ExportResult[]) {
-  const merge = mergeToggle.checked;
-  const compress = compressToggle.checked;
-
-  if (merge) {
-    setStatus('Merging PDFs...');
-    const merged = await PDFDocument.create();
-
-    for (const result of results) {
-      const bytes = new Uint8Array(result.data);
-      const pdf = await PDFDocument.load(bytes, { ignoreEncryption: true });
-      // ✅ Correct pdf-lib API: copyPages (not copyPagesFrom)
-      const pages = await merged.copyPages(pdf, pdf.getPageIndices());
-      pages.forEach(page => merged.addPage(page));
-    }
-
-    if (compress) setStatus('Compressing...');
-    const finalBytes = await merged.save({ useObjectStreams: compress });
-    downloadFile(finalBytes, 'slides.pdf');
-  } else {
-    for (const result of results) {
-      let bytes = new Uint8Array(result.data);
-
-      if (compress) {
-        const pdf = await PDFDocument.load(bytes, { ignoreEncryption: true });
-        bytes = await pdf.save({ useObjectStreams: true });
-      }
-
-      const safeName = result.name.replace(/[^\w\s\-]/g, '_').trim() || 'slide';
-      downloadFile(bytes, safeName + '.pdf');
-    }
-  }
-}
-
-function downloadFile(bytes: Uint8Array, filename: string) {
-  const blob = new Blob([bytes], { type: 'application/pdf' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
