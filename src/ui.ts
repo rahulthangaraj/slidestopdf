@@ -10,7 +10,7 @@ if (posthogKey) {
   });
 }
 
-const PLUGIN_VERSION = '1.1.1';
+const PLUGIN_VERSION = '1.1.2';
 
 interface Frame {
   id: string;
