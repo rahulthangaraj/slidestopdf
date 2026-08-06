@@ -5,6 +5,7 @@ A Figma plugin to export frames (slides) as PDF — with options to merge, compr
 ## Features
 
 - Export any frames from the current Figma page as PDF
+- Select a section to include all slides/frames inside it automatically
 - Drag to reorder slides before exporting
 - Select/deselect individual slides
 - Merge all slides into a single PDF
