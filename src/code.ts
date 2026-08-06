@@ -12,10 +12,15 @@ interface FrameInfo {
   height: number;
 }
 
-type ExportableSlide = FrameNode | ComponentNode | SlideNode;
+type ExportableSlide = FrameNode | ComponentNode | SlideNode | InstanceNode;
 
 function isExportableSlide(node: SceneNode): node is ExportableSlide {
-  return node.type === 'FRAME' || node.type === 'COMPONENT' || node.type === 'SLIDE';
+  return (
+    node.type === 'FRAME' ||
+    node.type === 'COMPONENT' ||
+    node.type === 'SLIDE' ||
+    node.type === 'INSTANCE'
+  );
 }
 
 function toInfo(node: ExportableSlide): FrameInfo {
@@ -27,19 +32,37 @@ function toInfo(node: ExportableSlide): FrameInfo {
   };
 }
 
-function isSlideContainer(node: SceneNode): boolean {
-  return node.type === 'SECTION' || node.type === 'SLIDE_ROW' || node.type === 'SLIDE_GRID';
+function isExpandableContainer(node: SceneNode): boolean {
+  return (
+    node.type === 'SECTION' ||
+    node.type === 'SLIDE_ROW' ||
+    node.type === 'SLIDE_GRID' ||
+    node.type === 'GROUP'
+  );
 }
 
-/** Collect slide-level frames from a section or other container (preserves child order). */
-function collectSlidesFromContainer(container: ChildrenMixin): ExportableSlide[] {
+/**
+ * Walk descendants of a container and collect slide-level nodes.
+ * Stops at each slide boundary so nested frames inside a slide are not listed separately.
+ */
+function collectSlidesUnderContainer(container: SceneNode): ExportableSlide[] {
   const slides: ExportableSlide[] = [];
 
-  for (const child of container.children) {
-    if (isSlideContainer(child)) {
-      slides.push(...collectSlidesFromContainer(child));
-    } else if (isExportableSlide(child)) {
-      slides.push(child);
+  function walk(node: SceneNode) {
+    if (isExportableSlide(node)) {
+      slides.push(node);
+      return;
+    }
+    if ('children' in node) {
+      for (const child of node.children) {
+        walk(child);
+      }
+    }
+  }
+
+  if ('children' in container) {
+    for (const child of container.children) {
+      walk(child);
     }
   }
 
@@ -51,14 +74,20 @@ function getSelectedFrames(): FrameInfo[] {
   const result: FrameInfo[] = [];
 
   for (const node of figma.currentPage.selection) {
-    if (node.type === 'SECTION') {
-      for (const slide of collectSlidesFromContainer(node)) {
-        if (!seen.has(slide.id)) {
-          seen.add(slide.id);
-          result.push(toInfo(slide));
+    if (isExpandableContainer(node)) {
+      const slides = collectSlidesUnderContainer(node);
+      if (slides.length > 0) {
+        for (const slide of slides) {
+          if (!seen.has(slide.id)) {
+            seen.add(slide.id);
+            result.push(toInfo(slide));
+          }
         }
+        continue;
       }
-    } else if (isExportableSlide(node)) {
+    }
+
+    if (isExportableSlide(node)) {
       if (!seen.has(node.id)) {
         seen.add(node.id);
         result.push(toInfo(node));
@@ -76,7 +105,44 @@ interface ExportPayload {
   height: number;
 }
 
+const LARGE_SLIDE_MAX_DIMENSION = 2560;
+
+function shouldUseImageExport(node: ExportableSlide): boolean {
+  return node.width > LARGE_SLIDE_MAX_DIMENSION || node.height > LARGE_SLIDE_MAX_DIMENSION;
+}
+
+async function exportSlideAsJpeg(node: ExportableSlide): Promise<ExportPayload> {
+  const targetWidth = Math.min(1920, Math.max(1, Math.round(node.width)));
+  try {
+    const bytes = await node.exportAsync({
+      format: 'JPG',
+      constraint: { type: 'WIDTH', value: targetWidth },
+    });
+    return {
+      format: 'jpeg',
+      data: bytes,
+      width: node.width,
+      height: node.height,
+    };
+  } catch {
+    const bytes = await node.exportAsync({
+      format: 'JPG',
+      constraint: { type: 'SCALE', value: 0.5 },
+    });
+    return {
+      format: 'jpeg',
+      data: bytes,
+      width: node.width,
+      height: node.height,
+    };
+  }
+}
+
 async function exportSlideBytes(node: ExportableSlide): Promise<ExportPayload> {
+  if (shouldUseImageExport(node)) {
+    return exportSlideAsJpeg(node);
+  }
+
   try {
     const bytes = await node.exportAsync({ format: 'PDF' });
     return {
@@ -86,32 +152,7 @@ async function exportSlideBytes(node: ExportableSlide): Promise<ExportPayload> {
       height: node.height,
     };
   } catch {
-    // PDF export often fails on heavy files (large images / memory limits).
-    // Fall back to a width-constrained JPEG, then build the PDF in the UI.
-    const targetWidth = Math.min(1920, Math.max(1, Math.round(node.width)));
-    try {
-      const bytes = await node.exportAsync({
-        format: 'JPG',
-        constraint: { type: 'WIDTH', value: targetWidth },
-      });
-      return {
-        format: 'jpeg',
-        data: bytes,
-        width: node.width,
-        height: node.height,
-      };
-    } catch {
-      const bytes = await node.exportAsync({
-        format: 'JPG',
-        constraint: { type: 'SCALE', value: 0.5 },
-      });
-      return {
-        format: 'jpeg',
-        data: bytes,
-        width: node.width,
-        height: node.height,
-      };
-    }
+    return exportSlideAsJpeg(node);
   }
 }
 

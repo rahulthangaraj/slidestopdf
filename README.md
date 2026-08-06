@@ -29,10 +29,33 @@ npm run watch
 
 ## Loading the Plugin in Figma
 
-1. Open Figma Desktop
+1. Open **Figma Desktop** (the plugin does not run in the browser-only Figma tab).
 2. Go to **Plugins → Development → Import plugin from manifest**
-3. Select the `manifest.json` file from this repo
+3. Select the `manifest.json` file from this repo folder (not your home directory).
 4. The plugin will appear under **Plugins → Development → Slides to PDF**
+
+### Downloading from GitHub (zip)
+
+The repo includes a pre-built `dist/` folder so the zip works without running `npm`. After downloading:
+
+1. Unzip the folder.
+2. Import `manifest.json` from that folder in Figma.
+3. If you previously imported an older copy, remove it first (**Plugins → Development → [your copy] → Remove**), then import again so Figma loads the new `dist/` files.
+
+### After pulling code changes
+
+Always rebuild before testing in Figma:
+
+```bash
+npm install
+npm run build
+```
+
+Then **close and reopen** the plugin in Figma (or remove and re-import) so it picks up the new `dist/` output.
+
+### Section selection
+
+Select a **Section** node in the canvas (Figma’s section layer, not just a regular frame). All frames, slides, and components inside — including inside groups — should appear in the plugin list automatically. You can also click **Refresh** after changing selection.
 
 ## Project Structure
 
