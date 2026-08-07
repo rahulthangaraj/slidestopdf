@@ -1,4 +1,5 @@
 import { PDFDocument } from 'pdf-lib';
+import { icon } from './icons';
 
 interface Frame {
   id: string;
@@ -7,155 +8,403 @@ interface Frame {
   height: number;
 }
 
-// State — user can reorder/remove within the plugin independently of Figma selection
+/* ────────────────────────────────────────────────────────────
+   State
+   ──────────────────────────────────────────────────────────── */
+
+// Everything the canvas selection gave us.
 let frames: Frame[] = [];
+// Ids the user ticked in the picker. Order comes from `slides` once we advance.
+let picked: { [id: string]: true } = {};
+// The curated, reorderable running order used for the editor and the export.
+let slides: Frame[] = [];
+
+let screen: 'picker' | 'editor' = 'picker';
 let dragSrcIndex: number | null = null;
 
-// DOM refs
-const frameListEl = document.getElementById('frame-list') as HTMLElement;
-const refreshBtn = document.getElementById('refresh') as HTMLButtonElement;
-const exportBtn = document.getElementById('export-btn') as HTMLButtonElement;
-const mergeToggle = document.getElementById('merge') as HTMLInputElement;
-const compressToggle = document.getElementById('compress') as HTMLInputElement;
-const statusEl = document.getElementById('status') as HTMLElement;
-const progressEl = document.getElementById('progress') as HTMLElement;
-const progressBarEl = document.getElementById('progress-bar') as HTMLElement;
-const progressTextEl = document.getElementById('progress-text') as HTMLElement;
-const frameCountEl = document.getElementById('frame-count') as HTMLElement;
-const emptyStateEl = document.getElementById('empty-state') as HTMLElement;
+const THUMB_WIDTH = 440;    // 2x the 222px card, for retina
+const PREVIEW_WIDTH = 1400; // large centre pane
+const PREVIEW_CACHE_MAX = 8;
 
-function postMessage(msg: Record<string, unknown>) {
+// Object URLs, keyed by node id. Revoked when evicted so blobs can be collected.
+const thumbs: { [id: string]: string } = {};
+const previews: { [id: string]: string } = {};
+const previewOrder: string[] = [];
+const failedThumbs: { [id: string]: true } = {};
+
+let previewQueue: string[] = [];
+let previewBusy = false;
+
+/* ────────────────────────────────────────────────────────────
+   DOM
+   ──────────────────────────────────────────────────────────── */
+
+function $(id: string): HTMLElement {
+  return document.getElementById(id) as HTMLElement;
+}
+
+const screenPicker = $('screen-picker');
+const screenEditor = $('screen-editor');
+const cardGrid = $('card-grid');
+const pickerBody = $('picker-body');
+const pickerEmpty = $('picker-empty');
+const selectAllBox = $('select-all-box');
+const selectAllRow = $('select-all-row');
+const continueBtn = $('continue-btn') as HTMLButtonElement;
+const refreshBtn = $('refresh-btn') as HTMLButtonElement;
+const hintText = $('hint-text');
+const frameList = $('frame-list');
+const stage = $('stage');
+const editorCount = $('editor-count');
+const exportBtn = $('export-btn') as HTMLButtonElement;
+const mergeToggle = $('merge') as HTMLInputElement;
+const compressToggle = $('compress') as HTMLInputElement;
+const statusEl = $('status');
+const progressEl = $('progress');
+const progressBar = $('progress-bar');
+
+function post(msg: Record<string, unknown>) {
   parent.postMessage({ pluginMessage: msg }, '*');
 }
 
-/* ────────────────────────────────────────────────────────────
-   Slide list
-   ──────────────────────────────────────────────────────────── */
-
-function el(tag: string, className: string, text?: string): HTMLElement {
+function el(tag: string, className?: string, text?: string): HTMLElement {
   const node = document.createElement(tag);
-  node.className = className;
-  // textContent, never innerHTML — frame names are user-controlled document
-  // data and would otherwise be parsed as markup.
+  if (className) node.className = className;
+  // textContent, never innerHTML — frame names are user-controlled document data.
   if (text !== undefined) node.textContent = text;
   return node;
 }
 
-function renderFrameList() {
-  frameListEl.textContent = '';
-
-  if (frames.length === 0) {
-    emptyStateEl.style.display = 'flex';
-    frameListEl.style.display = 'none';
-    frameCountEl.textContent = 'No frames selected';
-    exportBtn.disabled = true;
-    exportBtn.textContent = 'Select frames to export';
-    return;
-  }
-
-  emptyStateEl.style.display = 'none';
-  frameListEl.style.display = 'block';
-  frameCountEl.textContent = frames.length + ' frame' + (frames.length !== 1 ? 's' : '') + ' selected';
-  exportBtn.disabled = false;
-  exportBtn.textContent = 'Export ' + frames.length + ' Slide' + (frames.length !== 1 ? 's' : '') + ' as PDF';
-
-  frames.forEach((frame, index) => {
-    const item = el('div', 'frame-item');
-    item.draggable = false;
-
-    const left = el('div', 'item-left');
-
-    const dragHandle = el('span', 'drag-handle', '⠿');
-    dragHandle.title = 'Drag to reorder';
-
-    const badge = el('span', 'slide-badge', String(index + 1));
-
-    const info = el('div', 'slide-info');
-    const name = el('span', 'slide-name', frame.name);
-    name.title = frame.name;
-    const dim = el('span', 'slide-dim', frame.width + ' × ' + frame.height);
-    info.appendChild(name);
-    info.appendChild(dim);
-
-    left.appendChild(dragHandle);
-    left.appendChild(badge);
-    left.appendChild(info);
-
-    const removeBtn = el('button', 'remove-btn', '✕') as HTMLButtonElement;
-    removeBtn.title = 'Remove from export';
-
-    item.appendChild(left);
-    item.appendChild(removeBtn);
-
-    // Enable drag only from handle
-    dragHandle.addEventListener('mousedown', () => { item.draggable = true; });
-    dragHandle.addEventListener('mouseup', () => { item.draggable = false; });
-
-    removeBtn.addEventListener('click', () => {
-      frames.splice(index, 1);
-      renderFrameList();
-    });
-
-    // Drag events
-    item.addEventListener('dragstart', (e) => {
-      dragSrcIndex = index;
-      item.classList.add('dragging');
-      e.dataTransfer!.effectAllowed = 'move';
-    });
-
-    item.addEventListener('dragend', () => {
-      item.draggable = false;
-      item.classList.remove('dragging');
-      document.querySelectorAll('.frame-item').forEach(node => node.classList.remove('drag-over'));
-    });
-
-    item.addEventListener('dragover', (e) => {
-      e.preventDefault();
-      e.dataTransfer!.dropEffect = 'move';
-      document.querySelectorAll('.frame-item').forEach(node => node.classList.remove('drag-over'));
-      item.classList.add('drag-over');
-    });
-
-    item.addEventListener('drop', (e) => {
-      e.preventDefault();
-      if (dragSrcIndex === null || dragSrcIndex === index) return;
-      const moved = frames.splice(dragSrcIndex, 1)[0];
-      frames.splice(index, 0, moved);
-      dragSrcIndex = null;
-      renderFrameList();
-    });
-
-    frameListEl.appendChild(item);
-  });
+// Icons are trusted, generated constants; frame names never go through here.
+function setIcon(host: HTMLElement, name: string, size: number) {
+  host.innerHTML = icon(name, size);
 }
 
-function setStatus(msg: string, type: 'default' | 'error' | 'success' = 'default') {
-  statusEl.textContent = msg;
-  statusEl.className = 'status ' + type;
+// Checkbox glyphs carry a class so CSS can show the right one per state.
+function tickMarkup(): string {
+  return icon('check', 11).replace('class="icon"', 'class="tick"');
 }
-
-function showProgress(show: boolean) {
-  progressEl.style.display = show ? 'block' : 'none';
-}
-
-function updateProgress(current: number, total: number, name: string) {
-  const pct = Math.round((current / total) * 100);
-  progressBarEl.style.width = pct + '%';
-  progressTextEl.textContent = 'Exporting frame ' + current + ' of ' + total + ' — "' + name + '"';
-}
-
-function setLoading(loading: boolean) {
-  exportBtn.disabled = loading;
-  refreshBtn.disabled = loading;
+function dashMarkup(): string {
+  return icon('minus', 11).replace('class="icon"', 'class="dash"');
 }
 
 /* ────────────────────────────────────────────────────────────
-   Export pipeline
+   Preview streaming
    ──────────────────────────────────────────────────────────── */
 
-// Frames arrive one at a time and are folded into the output as they land, so
-// only a single frame's bytes plus the document being built are ever held in
-// memory. Accumulating every frame first is what made large decks fail.
+// Renders are requested in small batches rather than all at once, so scrolling
+// away from a slide cancels work that is no longer worth doing.
+function requestPreviews(ids: string[], kind: 'thumb' | 'preview') {
+  const width = kind === 'thumb' ? THUMB_WIDTH : PREVIEW_WIDTH;
+  const cache = kind === 'thumb' ? thumbs : previews;
+  const wanted = ids.filter(id => !cache[id] && (kind === 'preview' || !failedThumbs[id]));
+  if (wanted.length === 0) return;
+
+  previewQueue = previewQueue.concat(wanted.map(id => kind + ':' + id));
+  if (previewBusy) return;
+
+  previewBusy = true;
+  post({ type: 'RENDER_PREVIEWS', frameIds: wanted, width: width, kind: kind });
+}
+
+function cachePreview(id: string, kind: string, bytes: Uint8Array) {
+  const url = URL.createObjectURL(new Blob([bytes], { type: 'image/png' }));
+
+  if (kind === 'thumb') {
+    thumbs[id] = url;
+    paintThumb(id);
+    return;
+  }
+
+  previews[id] = url;
+  previewOrder.push(id);
+
+  // Large renders are heavy. Keep a small window and release the rest.
+  while (previewOrder.length > PREVIEW_CACHE_MAX) {
+    const evicted = previewOrder.shift() as string;
+    if (previews[evicted] && evicted !== id) {
+      URL.revokeObjectURL(previews[evicted]);
+      delete previews[evicted];
+      const host = document.querySelector('[data-preview="' + evicted + '"]');
+      if (host) renderStageCanvas(host as HTMLElement, evicted);
+    }
+  }
+  paintPreview(id);
+}
+
+function paintThumb(id: string) {
+  const host = document.querySelector('[data-thumb="' + id + '"]');
+  if (!host) return;
+  host.innerHTML = '';
+  if (thumbs[id]) {
+    const img = document.createElement('img');
+    img.src = thumbs[id];
+    img.alt = '';
+    host.appendChild(img);
+  } else if (failedThumbs[id]) {
+    host.appendChild(el('span', 'failed', 'Preview unavailable'));
+  } else {
+    host.appendChild(el('div', 'placeholder'));
+  }
+}
+
+function paintPreview(id: string) {
+  const host = document.querySelector('[data-preview="' + id + '"]');
+  if (host) renderStageCanvas(host as HTMLElement, id);
+}
+
+function renderStageCanvas(host: HTMLElement, id: string) {
+  host.innerHTML = '';
+  if (previews[id]) {
+    const img = document.createElement('img');
+    img.src = previews[id];
+    img.alt = '';
+    host.appendChild(img);
+  } else if (thumbs[id]) {
+    // Show the small render immediately, upscaled, while the big one lands.
+    const img = document.createElement('img');
+    img.src = thumbs[id];
+    img.alt = '';
+    host.appendChild(img);
+  } else {
+    host.appendChild(el('div', 'placeholder'));
+  }
+}
+
+/* ────────────────────────────────────────────────────────────
+   Screen 1 — picker
+   ──────────────────────────────────────────────────────────── */
+
+function pickedIds(): string[] {
+  return frames.filter(f => picked[f.id]).map(f => f.id);
+}
+
+function renderPicker() {
+  const has = frames.length > 0;
+  pickerBody.style.display = has ? 'flex' : 'none';
+  pickerEmpty.style.display = has ? 'none' : 'flex';
+  hintText.textContent = has
+    ? frames.length + ' frame' + (frames.length !== 1 ? 's' : '') + ' found in your selection'
+    : 'Select frames from Figma layers to proceed';
+
+  cardGrid.innerHTML = '';
+
+  frames.forEach(frame => {
+    const card = el('button', 'card') as HTMLButtonElement;
+    card.type = 'button';
+    if (picked[frame.id]) card.classList.add('selected');
+
+    // Selection is shown by tinting the card, per the design — there is no
+    // per-card checkbox.
+    const thumb = el('div', 'card-thumb');
+    thumb.setAttribute('data-thumb', frame.id);
+
+    card.appendChild(thumb);
+    card.appendChild(el('span', 'card-name', frame.name));
+
+    card.addEventListener('click', () => {
+      if (picked[frame.id]) delete picked[frame.id];
+      else picked[frame.id] = true;
+      syncPickerSelection();
+    });
+
+    cardGrid.appendChild(card);
+    paintThumb(frame.id);
+  });
+
+  syncPickerSelection();
+  requestPreviews(frames.map(f => f.id), 'thumb');
+}
+
+function syncPickerSelection() {
+  const ids = pickedIds();
+
+  frames.forEach((frame, i) => {
+    const card = cardGrid.children[i] as HTMLElement;
+    if (!card) return;
+    card.classList.toggle('selected', !!picked[frame.id]);
+  });
+
+  const all = frames.length > 0 && ids.length === frames.length;
+  const some = ids.length > 0 && !all;
+  selectAllBox.classList.toggle('checked', all);
+  selectAllBox.classList.toggle('indeterminate', some);
+  selectAllBox.setAttribute('aria-checked', all ? 'true' : some ? 'mixed' : 'false');
+
+  continueBtn.disabled = ids.length === 0;
+  continueBtn.textContent = 'Continue with Slides (' + ids.length + ')';
+}
+
+selectAllBox.innerHTML = tickMarkup() + dashMarkup();
+
+function toggleSelectAll() {
+  if (pickedIds().length === frames.length) picked = {};
+  else frames.forEach(f => { picked[f.id] = true; });
+  syncPickerSelection();
+}
+
+selectAllRow.addEventListener('click', toggleSelectAll);
+selectAllBox.addEventListener('keydown', (e) => {
+  if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); toggleSelectAll(); }
+});
+
+/* ────────────────────────────────────────────────────────────
+   Screen 2 — editor
+   ──────────────────────────────────────────────────────────── */
+
+function showScreen(next: 'picker' | 'editor') {
+  screen = next;
+  screenPicker.classList.toggle('active', next === 'picker');
+  screenEditor.classList.toggle('active', next === 'editor');
+  post({ type: 'CANCEL_PREVIEWS' });
+  previewQueue = [];
+  previewBusy = false;
+
+  if (next === 'editor') renderEditor();
+  else requestPreviews(frames.map(f => f.id), 'thumb');
+}
+
+function renderEditor() {
+  editorCount.textContent = String(slides.length);
+  renderFrameList();
+  renderStage();
+}
+
+function renderFrameList() {
+  frameList.innerHTML = '';
+
+  slides.forEach((frame, index) => {
+    const row = el('div', 'frame-row');
+    row.draggable = false;
+
+    const grip = el('span', 'grip');
+    setIcon(grip, 'grip-vertical', 16);
+    grip.title = 'Drag to reorder';
+
+    const pill = el('button', 'frame-pill') as HTMLButtonElement;
+    pill.type = 'button';
+    const mark = el('span');
+    setIcon(mark, 'frame', 12);
+    const label = el('span', 'lbl', frame.name);
+    label.title = frame.name;
+    pill.appendChild(mark);
+    pill.appendChild(label);
+
+    row.appendChild(grip);
+    row.appendChild(pill);
+
+    grip.addEventListener('mousedown', () => { row.draggable = true; });
+    grip.addEventListener('mouseup', () => { row.draggable = false; });
+
+    pill.addEventListener('click', () => {
+      const target = stage.querySelector('[data-stage="' + frame.id + '"]');
+      if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      setActiveRow(frame.id);
+      requestPreviews([frame.id], 'preview');
+    });
+
+    row.addEventListener('dragstart', (e) => {
+      dragSrcIndex = index;
+      row.classList.add('dragging');
+      if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
+    });
+    row.addEventListener('dragend', () => {
+      row.draggable = false;
+      row.classList.remove('dragging');
+      frameList.querySelectorAll('.frame-row').forEach(n => n.classList.remove('drag-over'));
+    });
+    row.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+      frameList.querySelectorAll('.frame-row').forEach(n => n.classList.remove('drag-over'));
+      row.classList.add('drag-over');
+    });
+    row.addEventListener('drop', (e) => {
+      e.preventDefault();
+      if (dragSrcIndex === null || dragSrcIndex === index) return;
+      const moved = slides.splice(dragSrcIndex, 1)[0];
+      slides.splice(index, 0, moved);
+      dragSrcIndex = null;
+      renderEditor();
+    });
+
+    frameList.appendChild(row);
+  });
+}
+
+function setActiveRow(id: string) {
+  const index = slides.findIndex(f => f.id === id);
+  Array.prototype.forEach.call(frameList.children, (row: HTMLElement, i: number) => {
+    row.classList.toggle('active', i === index);
+  });
+}
+
+let stageObserver: IntersectionObserver | null = null;
+let activeRowPending = false;
+
+// The highlighted row is whichever slide currently sits at the top of the pane.
+// Derived from scroll position rather than intersection callbacks — with a
+// look-ahead margin several slides intersect at once and the last callback wins,
+// which highlighted an arbitrary row.
+function syncActiveRow() {
+  if (slides.length === 0) return;
+  const top = stage.getBoundingClientRect().top;
+  let current = slides[0].id;
+
+  for (const frame of slides) {
+    const node = stage.querySelector('[data-stage="' + frame.id + '"]');
+    if (!node) continue;
+    if (node.getBoundingClientRect().bottom > top + 8) { current = frame.id; break; }
+  }
+  setActiveRow(current);
+}
+
+stage.addEventListener('scroll', () => {
+  if (activeRowPending) return;
+  activeRowPending = true;
+  requestAnimationFrame(() => { activeRowPending = false; syncActiveRow(); });
+});
+
+function renderStage() {
+  stage.innerHTML = '';
+  if (stageObserver) stageObserver.disconnect();
+
+  slides.forEach(frame => {
+    const item = el('div', 'stage-item');
+    item.setAttribute('data-stage', frame.id);
+
+    const name = el('div', 'stage-name', frame.name);
+    name.title = frame.name;
+
+    const canvas = el('div', 'stage-canvas');
+    canvas.setAttribute('data-preview', frame.id);
+    renderStageCanvas(canvas, frame.id);
+
+    item.appendChild(name);
+    item.appendChild(canvas);
+    stage.appendChild(item);
+  });
+
+  // Only render what is on screen — a 200-slide deck should not queue 200
+  // full-size renders on open. The margin deliberately runs ahead of the
+  // viewport so a render is usually ready by the time a slide scrolls in.
+  stageObserver = new IntersectionObserver((entries) => {
+    const visible: string[] = [];
+    entries.forEach(entry => {
+      const id = (entry.target as HTMLElement).getAttribute('data-stage');
+      if (id && entry.isIntersecting) visible.push(id);
+    });
+    if (visible.length > 0) requestPreviews(visible, 'preview');
+  }, { root: stage, rootMargin: '400px 0px' });
+
+  stage.querySelectorAll('.stage-item').forEach(node => stageObserver!.observe(node));
+  syncActiveRow();
+}
+
+/* ────────────────────────────────────────────────────────────
+   Export
+   ──────────────────────────────────────────────────────────── */
+
 let mergedDoc: PDFDocument | null = null;
 let mergeMode = false;
 let compressMode = false;
@@ -163,11 +412,11 @@ let usedNames: { [name: string]: true } = {};
 let failures: string[] = [];
 let lastDownloadAt = 0;
 
-function resetExportState() {
-  mergedDoc = null;
-  usedNames = {};
-  failures = [];
-  lastDownloadAt = 0;
+const DOWNLOAD_GAP_MS = 300;
+
+function setStatus(msg: string, type: 'default' | 'error' | 'success' = 'default') {
+  statusEl.textContent = msg;
+  statusEl.className = 'status ' + type;
 }
 
 function describeError(err: unknown): string {
@@ -180,10 +429,7 @@ function uniqueFileName(rawName: string): string {
   const base = rawName.replace(/[^\w\s\-]/g, '_').trim() || 'slide';
   let candidate = base;
   let n = 2;
-  while (usedNames[candidate] === true) {
-    candidate = base + ' (' + n + ')';
-    n++;
-  }
+  while (usedNames[candidate] === true) { candidate = base + ' (' + n + ')'; n++; }
   usedNames[candidate] = true;
   return candidate + '.pdf';
 }
@@ -192,17 +438,12 @@ function delay(ms: number): Promise<void> {
   return new Promise<void>(resolve => setTimeout(resolve, ms));
 }
 
-// Chromium throttles downloads fired back-to-back, so unmerged exports are
-// spaced out rather than dumped in a tight loop.
-const DOWNLOAD_GAP_MS = 300;
-
 async function downloadFile(bytes: Uint8Array, filename: string) {
   const wait = lastDownloadAt + DOWNLOAD_GAP_MS - Date.now();
   if (wait > 0) await delay(wait);
   lastDownloadAt = Date.now();
 
-  const blob = new Blob([bytes], { type: 'application/pdf' });
-  const url = URL.createObjectURL(blob);
+  const url = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
   const a = document.createElement('a');
   a.href = url;
   a.download = filename;
@@ -232,7 +473,7 @@ async function finishExport(exportErrors: string[]) {
   let fileCount = 0;
 
   if (mergeMode) {
-    setStatus(compressMode ? 'Compressing merged PDF...' : 'Saving merged PDF...');
+    setStatus(compressMode ? 'Compressing merged PDF…' : 'Saving merged PDF…');
     const bytes = await mergedDoc!.save({ useObjectStreams: compressMode });
     await downloadFile(bytes, 'slides.pdf');
     fileCount = 1;
@@ -240,39 +481,57 @@ async function finishExport(exportErrors: string[]) {
     fileCount = Object.keys(usedNames).length;
   }
 
-  // Release the document before reporting — it is the largest thing we hold.
   mergedDoc = null;
 
   const skipped = exportErrors.length + failures.length;
-  let doneMsg = 'Done! ' + (mergeMode ? '1 merged PDF' : fileCount + ' PDF' + (fileCount !== 1 ? 's' : '')) + ' downloaded.';
-  if (skipped > 0) {
-    doneMsg += ' (' + skipped + ' frame' + (skipped !== 1 ? 's' : '') + ' skipped)';
-  }
-  setStatus(doneMsg, skipped > 0 ? 'default' : 'success');
+  let msg = 'Done — ' + (mergeMode ? '1 merged PDF' : fileCount + ' PDF' + (fileCount !== 1 ? 's' : '')) + ' downloaded.';
+  if (skipped > 0) msg += ' ' + skipped + ' frame' + (skipped !== 1 ? 's' : '') + ' skipped.';
+  setStatus(msg, skipped > 0 ? 'default' : 'success');
+}
+
+function setExporting(busy: boolean) {
+  exportBtn.disabled = busy;
+  exportBtn.textContent = busy ? 'Exporting…' : 'Export';
+  progressEl.style.display = busy ? 'block' : 'none';
+  mergeToggle.disabled = busy;
+  compressToggle.disabled = busy;
 }
 
 /* ────────────────────────────────────────────────────────────
    Events
    ──────────────────────────────────────────────────────────── */
 
+setIcon($('hint-icon'), 'mouse-pointer-click', 20);
+setIcon(refreshBtn, 'refresh-ccw', 12);
+setIcon($('close-btn'), 'x', 20);
+setIcon($('back-btn'), 'arrow-left', 14);
+
+$('close-btn').addEventListener('click', () => post({ type: 'CLOSE' }));
+
 refreshBtn.addEventListener('click', () => {
-  setStatus('Refreshing from selection...');
-  postMessage({ type: 'GET_FRAMES' });
+  refreshBtn.classList.add('spinning');
+  post({ type: 'GET_FRAMES' });
 });
+
+continueBtn.addEventListener('click', () => {
+  const ids = pickedIds();
+  if (ids.length === 0) return;
+  slides = frames.filter(f => picked[f.id]);
+  setStatus('');
+  showScreen('editor');
+});
+
+$('back-btn').addEventListener('click', () => showScreen('picker'));
 
 exportBtn.addEventListener('click', () => {
-  if (frames.length === 0) return;
-  // Latch the options for the whole run so toggling mid-export can't produce a
-  // half-merged result.
+  if (slides.length === 0) return;
   mergeMode = mergeToggle.checked;
   compressMode = compressToggle.checked;
-  setLoading(true);
-  showProgress(true);
-  setStatus('Exporting frames from Figma...');
-  postMessage({ type: 'EXPORT_FRAMES', frameIds: frames.map(f => f.id) });
+  setExporting(true);
+  setStatus('Exporting frames from Figma…');
+  post({ type: 'EXPORT_FRAMES', frameIds: slides.map(f => f.id) });
 });
 
-// Messages from plugin sandbox
 window.onmessage = async (event: MessageEvent) => {
   const msg = event.data && event.data.pluginMessage;
   if (!msg) return;
@@ -280,24 +539,54 @@ window.onmessage = async (event: MessageEvent) => {
   switch (msg.type) {
 
     case 'FRAMES_LIST': {
+      refreshBtn.classList.remove('spinning');
       const incoming = (msg.frames as Frame[]) || [];
-      // A selection change that clears the canvas selection shouldn't throw away
-      // a list the user has already reordered or pruned. Refresh always syncs.
+      // Don't discard a curated picker state when the canvas selection is simply
+      // cleared. Refresh always re-syncs.
       if (msg.reason === 'selection' && incoming.length === 0 && frames.length > 0) break;
+
       frames = incoming;
-      setStatus('');
-      renderFrameList();
+      // Default to everything selected — the common case is "export this section".
+      picked = {};
+      frames.forEach(f => { picked[f.id] = true; });
+      if (screen === 'picker') renderPicker();
+      break;
+    }
+
+    case 'PREVIEW_DATA': {
+      cachePreview(msg.id as string, msg.kind as string, msg.bytes as Uint8Array);
+      post({ type: 'PREVIEW_ACK' });
+      break;
+    }
+
+    case 'PREVIEW_FAILED': {
+      if (msg.kind === 'thumb') {
+        failedThumbs[msg.id as string] = true;
+        paintThumb(msg.id as string);
+      }
+      break;
+    }
+
+    case 'PREVIEW_DONE': {
+      previewBusy = false;
+      previewQueue = [];
       break;
     }
 
     case 'EXPORT_START': {
-      resetExportState();
+      mergedDoc = null;
+      usedNames = {};
+      failures = [];
+      lastDownloadAt = 0;
+      progressBar.style.width = '0%';
       if (mergeMode) mergedDoc = await PDFDocument.create();
       break;
     }
 
     case 'EXPORT_PROGRESS': {
-      updateProgress(msg.current as number, msg.total as number, msg.name as string);
+      const pct = Math.round(((msg.current as number) / (msg.total as number)) * 100);
+      progressBar.style.width = pct + '%';
+      setStatus('Exporting ' + msg.current + ' of ' + msg.total + ' — "' + msg.name + '"');
       break;
     }
 
@@ -307,32 +596,28 @@ window.onmessage = async (event: MessageEvent) => {
       } catch (err) {
         failures.push('"' + msg.name + '": ' + describeError(err));
       }
-      // Always acknowledge, including after a failure — the sandbox is blocked
-      // waiting on this and would otherwise stall the whole export.
-      postMessage({ type: 'FRAME_ACK' });
+      // Always acknowledge, even after a failure — the sandbox is blocked on this.
+      post({ type: 'FRAME_ACK' });
       break;
     }
 
     case 'EXPORT_DONE': {
-      setStatus('Processing PDF...');
+      setStatus('Building PDF…');
       try {
         await finishExport((msg.errors as string[]) || []);
       } catch (err) {
-        setStatus('Error: ' + describeError(err), 'error');
+        setStatus('Export failed: ' + describeError(err), 'error');
         mergedDoc = null;
+        post({ type: 'EXPORT_ABORT' });
       }
-      showProgress(false);
-      setLoading(false);
-      renderFrameList();
+      setExporting(false);
       break;
     }
 
     case 'EXPORT_ERROR': {
       setStatus(msg.message as string, 'error');
       mergedDoc = null;
-      showProgress(false);
-      setLoading(false);
-      renderFrameList();
+      setExporting(false);
       break;
     }
   }
@@ -340,4 +625,4 @@ window.onmessage = async (event: MessageEvent) => {
 
 // Ask for the initial selection now that the handler above is live. The sandbox
 // can't push it at startup — that would race the iframe load and be dropped.
-postMessage({ type: 'GET_FRAMES' });
+post({ type: 'GET_FRAMES' });

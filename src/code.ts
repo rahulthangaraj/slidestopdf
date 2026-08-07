@@ -1,8 +1,10 @@
 /// <reference types="@figma/plugin-typings" />
 
+// Designed at 1280x720. Figma clamps this to the available window, and the
+// layout reflows below that — sidebars stay fixed, the middle gives way.
 figma.showUI(__html__, {
-  width: 380,
-  height: 560,
+  width: 1280,
+  height: 720,
 });
 
 interface FrameInfo {
@@ -136,19 +138,25 @@ figma.on('selectionchange', () => sendFrames('selection'));
 // exported until the UI acknowledges the previous one. Without that
 // backpressure the sandbox races ahead and every frame's bytes pile up in the
 // UI's message queue, which is what made large decks run out of memory.
-let ackPending: (() => void) | null = null;
-let exporting = false;
-let aborted = false;
+//
+// Two independent streams share this machinery: 'export' (PDF) and 'preview'
+// (PNG renders for the UI). They can overlap — a preview request can still be
+// draining when an export starts — so each keeps its own waiter and cancel flag.
+type Channel = 'export' | 'preview';
 
-function waitForAck(): Promise<void> {
+const ackPending: { [c: string]: (() => void) | null } = { export: null, preview: null };
+const cancelled: { [c: string]: boolean } = { export: false, preview: false };
+let exporting = false;
+
+function waitForAck(channel: Channel): Promise<void> {
   return new Promise<void>(resolve => {
-    ackPending = resolve;
+    ackPending[channel] = resolve;
   });
 }
 
-function resolveAck() {
-  const resolve = ackPending;
-  ackPending = null;
+function resolveAck(channel: Channel) {
+  const resolve = ackPending[channel];
+  ackPending[channel] = null;
   if (resolve) resolve();
 }
 
@@ -158,6 +166,40 @@ function describeError(err: unknown): string {
     : String(err);
 }
 
+// PNG renders for the picker grid and the editor's large preview pane.
+//
+// Requested lazily by the UI — only for slides it is about to show — and
+// streamed with the same acknowledgement handshake as the PDF export, so a
+// 200-slide deck never has more than one render in flight.
+async function runPreviews(frameIds: string[], width: number, kind: string) {
+  for (let i = 0; i < frameIds.length; i++) {
+    if (cancelled.preview) break;
+
+    const id = frameIds[i];
+
+    try {
+      const node = await figma.getNodeByIdAsync(id);
+      if (!node || (node.type !== 'FRAME' && node.type !== 'COMPONENT')) continue;
+
+      const bytes = await node.exportAsync({
+        format: 'PNG',
+        constraint: { type: 'WIDTH', value: width },
+      });
+
+      if (cancelled.preview) break;
+
+      const ack = waitForAck('preview');
+      figma.ui.postMessage({ type: 'PREVIEW_DATA', id: id, kind: kind, bytes: bytes });
+      await ack;
+    } catch (err) {
+      // A preview that fails to render is cosmetic — the slide still exports.
+      figma.ui.postMessage({ type: 'PREVIEW_FAILED', id: id, kind: kind });
+    }
+  }
+
+  figma.ui.postMessage({ type: 'PREVIEW_DONE', kind: kind });
+}
+
 async function runExport(frameIds: string[]) {
   const errors: string[] = [];
   let exported = 0;
@@ -165,7 +207,7 @@ async function runExport(frameIds: string[]) {
   figma.ui.postMessage({ type: 'EXPORT_START', total: frameIds.length });
 
   for (let i = 0; i < frameIds.length; i++) {
-    if (aborted) break;
+    if (cancelled.export) break;
 
     const id = frameIds[i];
 
@@ -205,7 +247,7 @@ async function runExport(frameIds: string[]) {
       // there is no reason to expand the buffer into a number[] first.
       const bytes = await node.exportAsync({ format: 'PDF' });
 
-      const ack = waitForAck();
+      const ack = waitForAck('export');
       figma.ui.postMessage({
         type: 'FRAME_DATA',
         index: i,
@@ -230,7 +272,7 @@ async function runExport(frameIds: string[]) {
 
   exporting = false;
 
-  if (aborted) return;
+  if (cancelled.export) return;
 
   if (exported === 0) {
     figma.ui.postMessage({
@@ -242,11 +284,38 @@ async function runExport(frameIds: string[]) {
   }
 }
 
-figma.ui.onmessage = async (msg: { type: string; frameIds?: string[] }) => {
+interface UIMessage {
+  type: string;
+  frameIds?: string[];
+  width?: number;
+  kind?: string;
+}
+
+figma.ui.onmessage = async (msg: UIMessage) => {
   switch (msg.type) {
 
     case 'GET_FRAMES': {
       sendFrames('request');
+      break;
+    }
+
+    case 'RENDER_PREVIEWS': {
+      cancelled.preview = false;
+      await runPreviews(msg.frameIds || [], msg.width || 440, msg.kind || 'thumb');
+      break;
+    }
+
+    // UI has shown what it asked for, or moved on. Stop rendering — this is the
+    // difference between a responsive plugin and one that grinds through 200
+    // renders nobody is looking at.
+    case 'CANCEL_PREVIEWS': {
+      cancelled.preview = true;
+      resolveAck('preview');
+      break;
+    }
+
+    case 'PREVIEW_ACK': {
+      resolveAck('preview');
       break;
     }
 
@@ -263,7 +332,7 @@ figma.ui.onmessage = async (msg: { type: string; frameIds?: string[] }) => {
 
       if (exporting) return;
       exporting = true;
-      aborted = false;
+      cancelled.export = false;
 
       await runExport(frameIds);
       break;
@@ -271,15 +340,15 @@ figma.ui.onmessage = async (msg: { type: string; frameIds?: string[] }) => {
 
     // UI has consumed the last frame it was sent and is ready for the next.
     case 'FRAME_ACK': {
-      resolveAck();
+      resolveAck('export');
       break;
     }
 
     // UI hit a fatal error mid-stream. Unblock the export loop so it can unwind
     // instead of waiting on an acknowledgement that will never arrive.
     case 'EXPORT_ABORT': {
-      aborted = true;
-      resolveAck();
+      cancelled.export = true;
+      resolveAck('export');
       break;
     }
 
