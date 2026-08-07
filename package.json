@@ -4,7 +4,10 @@
   "description": "Figma plugin to export slides as PDF with merge, compress, and reorder options",
   "scripts": {
     "build": "node build.js",
-    "watch": "node build.js --watch"
+    "watch": "node build.js --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "node build.js && node test/selection.test.js && node test/export.test.js",
+    "bench": "node --expose-gc --max-old-space-size=4096 test/merge.bench.js"
   },
   "devDependencies": {
     "@figma/plugin-typings": "^1.90.0",
@@ -12,7 +15,6 @@
     "typescript": "^5.3.0"
   },
   "dependencies": {
-    "pdf-lib": "^1.17.1",
-    "posthog-js": "^1.399.5"
+    "pdf-lib": "^1.17.1"
   }
 }
