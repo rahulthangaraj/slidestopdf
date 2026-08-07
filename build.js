@@ -26,7 +26,11 @@ const uiHtmlPlugin = {
 
       const uiJS = outputFile.text;
       let html = fs.readFileSync(path.join(root, 'src/ui.html'), 'utf8');
-      html = html.replace('<!-- INJECT_SCRIPT -->', `<script>${uiJS}</script>`);
+      // Replace via a function, NOT a string. In a string replacement, `$&`,
+      // `$'`, "$`" and `$1` are substitution patterns — a literal `$&` in the
+      // bundled JS would be rewritten to the placeholder text. pdf-lib's
+      // escapeRegExp contains exactly that, and was being silently corrupted.
+      html = html.replace('<!-- INJECT_SCRIPT -->', () => `<script>${uiJS}</script>`);
       fs.writeFileSync(path.join(outDir, 'ui.html'), html);
       console.log('[ui] ' + path.relative(root, path.join(outDir, 'ui.html')) + ' built');
     });

@@ -51,9 +51,22 @@ try {
     }
   }
 
+  // Guard against `$`-substitution corruption during script injection. If
+  // build.js injects the bundle with a string replacement instead of a function,
+  // a literal `$&` anywhere in the bundled JS is rewritten to the placeholder
+  // text. pdf-lib's escapeRegExp contains one, and was silently mangled this way.
+  // A byte-diff against a fresh build cannot catch it — both sides corrupt
+  // identically — so assert the placeholder is absent from the output.
+  const built = fs.readFileSync(path.join(committed, 'ui.html'), 'utf8');
+  if (built.indexOf('<!-- INJECT_SCRIPT -->') !== -1) {
+    fail(['dist/ui.html contains the INJECT_SCRIPT placeholder — the bundle was corrupted ' +
+          'by $-substitution during injection. build.js must pass a function to .replace(), not a string.']);
+  }
+
   if (problems.length > 0) fail(problems);
 
   console.log('dist/ matches src/');
+  console.log('  PASS — no $-substitution corruption in the injected bundle');
   for (const name of FILES) {
     console.log('  PASS — dist/' + name + ' (' + fs.statSync(path.join(committed, name)).size + ' bytes)');
   }
