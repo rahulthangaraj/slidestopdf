@@ -2,11 +2,18 @@ const esbuild = require('esbuild');
 const fs = require('fs');
 const path = require('path');
 
+const root = __dirname;
 const isWatch = process.argv.includes('--watch');
 
-if (!fs.existsSync('dist')) {
-  fs.mkdirSync('dist');
-}
+// dist/ is committed so the plugin can be imported straight from a source ZIP
+// without a build step. --outdir lets the staleness check build somewhere else
+// and diff the result against what's committed.
+const outDirArg = process.argv.indexOf('--outdir');
+const outDir = outDirArg !== -1 && process.argv[outDirArg + 1]
+  ? path.resolve(process.argv[outDirArg + 1])
+  : path.join(root, 'dist');
+
+fs.mkdirSync(outDir, { recursive: true });
 
 // Plugin that injects bundled UI JS into ui.html
 const uiHtmlPlugin = {
@@ -18,17 +25,21 @@ const uiHtmlPlugin = {
       if (!outputFile) return;
 
       const uiJS = outputFile.text;
-      let html = fs.readFileSync('src/ui.html', 'utf8');
-      html = html.replace('<!-- INJECT_SCRIPT -->', `<script>${uiJS}</script>`);
-      fs.writeFileSync('dist/ui.html', html);
-      console.log('[ui] dist/ui.html built');
+      let html = fs.readFileSync(path.join(root, 'src/ui.html'), 'utf8');
+      // Replace via a function, NOT a string. In a string replacement, `$&`,
+      // `$'`, "$`" and `$1` are substitution patterns — a literal `$&` in the
+      // bundled JS would be rewritten to the placeholder text. pdf-lib's
+      // escapeRegExp contains exactly that, and was being silently corrupted.
+      html = html.replace('<!-- INJECT_SCRIPT -->', () => `<script>${uiJS}</script>`);
+      fs.writeFileSync(path.join(outDir, 'ui.html'), html);
+      console.log('[ui] ' + path.relative(root, path.join(outDir, 'ui.html')) + ' built');
     });
   },
 };
 
 async function main() {
   const uiCtx = await esbuild.context({
-    entryPoints: ['src/ui.ts'],
+    entryPoints: [path.join(root, 'src/ui.ts')],
     bundle: true,
     write: false,
     format: 'iife',
@@ -38,9 +49,9 @@ async function main() {
   });
 
   const codeCtx = await esbuild.context({
-    entryPoints: ['src/code.ts'],
+    entryPoints: [path.join(root, 'src/code.ts')],
     bundle: true,
-    outfile: 'dist/code.js',
+    outfile: path.join(outDir, 'code.js'),
     format: 'iife',
     target: ['es2017'],  // Figma sandbox doesn't support ES2020+ (no ??, ?.)
     minify: !isWatch,
