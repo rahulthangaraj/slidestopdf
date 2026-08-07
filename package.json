@@ -7,7 +7,9 @@
     "watch": "node build.js --watch",
     "typecheck": "tsc --noEmit",
     "test": "node test/dist-current.test.js && node build.js && node test/selection.test.js && node test/export.test.js",
-    "bench": "node --expose-gc --max-old-space-size=4096 test/merge.bench.js"
+    "bench": "node --expose-gc --max-old-space-size=4096 test/merge.bench.js",
+    "icons": "node scripts/gen-icons.js",
+    "preview": "node test/preview.js"
   },
   "devDependencies": {
     "@figma/plugin-typings": "^1.90.0",
