@@ -2,18 +2,6 @@ const esbuild = require('esbuild');
 const fs = require('fs');
 const path = require('path');
 
-// Load .env so POSTHOG_* vars are available for esbuild define
-if (fs.existsSync('.env')) {
-  fs.readFileSync('.env', 'utf8').split('\n').forEach(line => {
-    const eq = line.indexOf('=');
-    if (eq > 0 && !line.trimStart().startsWith('#')) {
-      const key = line.slice(0, eq).trim();
-      const val = line.slice(eq + 1).trim();
-      if (key) process.env[key] = val;
-    }
-  });
-}
-
 const isWatch = process.argv.includes('--watch');
 
 if (!fs.existsSync('dist')) {
@@ -47,10 +35,6 @@ async function main() {
     target: ['chrome91'],
     minify: !isWatch,
     plugins: [uiHtmlPlugin],
-    define: {
-      'process.env.POSTHOG_API_KEY': JSON.stringify(process.env.POSTHOG_API_KEY || ''),
-      'process.env.POSTHOG_HOST': JSON.stringify(process.env.POSTHOG_HOST || ''),
-    },
   });
 
   const codeCtx = await esbuild.context({
