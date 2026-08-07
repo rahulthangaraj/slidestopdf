@@ -116,19 +116,36 @@ function collectSlides(nodes: ReadonlyArray<SceneNode>, out: SlideFrame[], seen:
   }
 }
 
-function getSelectedFrames(): FrameInfo[] {
-  const slides: SlideFrame[] = [];
-  collectSlides(figma.currentPage.selection, slides, {});
-  return slides.map(toInfo);
+// The picker always lists every slide on the page; the canvas selection only
+// decides what starts ticked. Opening the plugin with nothing selected should
+// still show you the deck rather than an empty screen.
+async function getPageFrames(): Promise<{ frames: FrameInfo[]; selected: string[] }> {
+  // Reading a PageNode's children requires an explicit load under
+  // documentAccess "dynamic-page" — without this it throws.
+  await figma.currentPage.loadAsync();
+
+  const all: SlideFrame[] = [];
+  collectSlides(figma.currentPage.children, all, {});
+
+  const selected: SlideFrame[] = [];
+  collectSlides(figma.currentPage.selection, selected, {});
+
+  return { frames: all.map(toInfo), selected: selected.map(node => node.id) };
 }
 
-function sendFrames(reason: 'request' | 'selection') {
-  figma.ui.postMessage({ type: 'FRAMES_LIST', frames: getSelectedFrames(), reason: reason });
+async function sendFrames(reason: 'request' | 'selection') {
+  const page = await getPageFrames();
+  figma.ui.postMessage({
+    type: 'FRAMES_LIST',
+    frames: page.frames,
+    selected: page.selected,
+    reason: reason,
+  });
 }
 
 // The UI asks for the initial list once it has mounted its message handler —
 // posting here would race the iframe load and get dropped.
-figma.on('selectionchange', () => sendFrames('selection'));
+figma.on('selectionchange', () => { void sendFrames('selection'); });
 
 /* ────────────────────────────────────────────────────────────
    Export
@@ -295,7 +312,7 @@ figma.ui.onmessage = async (msg: UIMessage) => {
   switch (msg.type) {
 
     case 'GET_FRAMES': {
-      sendFrames('request');
+      await sendFrames('request');
       break;
     }
 

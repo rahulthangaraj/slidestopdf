@@ -60,8 +60,6 @@ const exportBtn = $('export-btn') as HTMLButtonElement;
 const mergeToggle = $('merge') as HTMLInputElement;
 const compressToggle = $('compress') as HTMLInputElement;
 const statusEl = $('status');
-const progressEl = $('progress');
-const progressBar = $('progress-bar');
 
 function post(msg: Record<string, unknown>) {
   parent.postMessage({ pluginMessage: msg }, '*');
@@ -78,6 +76,45 @@ function el(tag: string, className?: string, text?: string): HTMLElement {
 // Icons are trusted, generated constants; frame names never go through here.
 function setIcon(host: HTMLElement, name: string, size: number) {
   host.innerHTML = icon(name, size);
+}
+
+/* ── Button component ─────────────────────────────────────────
+   Idle, busy and progress all live inside the button. Nothing appears
+   or disappears around it, so the layout never shifts mid-action. */
+
+const SPINNER =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">' +
+  '<circle cx="12" cy="12" r="9" /><path d="M21 12a9 9 0 0 0-9-9" /></svg>';
+
+interface ButtonState {
+  label?: string;
+  busy?: boolean;
+  progress?: number; // 0..1
+  disabled?: boolean;
+}
+
+function setButton(btn: HTMLButtonElement, state: ButtonState) {
+  const labelEl = btn.querySelector('.btn-label') as HTMLElement;
+  const fillEl = btn.querySelector('.btn-fill') as HTMLElement;
+  const spinEl = btn.querySelector('.btn-spinner') as HTMLElement;
+
+  if (spinEl && !spinEl.innerHTML) spinEl.innerHTML = SPINNER;
+
+  if (state.busy !== undefined) btn.classList.toggle('is-busy', state.busy);
+  if (state.disabled !== undefined) btn.disabled = state.disabled;
+  if (state.progress !== undefined && fillEl) {
+    fillEl.style.width = Math.max(0, Math.min(1, state.progress)) * 100 + '%';
+  }
+
+  if (state.label !== undefined && labelEl && labelEl.textContent !== state.label) {
+    // Cross-fade rather than snapping, so a counter ticking up reads as one
+    // continuous action instead of flickering text.
+    btn.classList.add('is-swapping');
+    window.setTimeout(() => {
+      labelEl.textContent = state.label as string;
+      btn.classList.remove('is-swapping');
+    }, 110);
+  }
 }
 
 // Checkbox glyphs carry a class so CSS can show the right one per state.
@@ -231,8 +268,10 @@ function syncPickerSelection() {
   selectAllBox.classList.toggle('indeterminate', some);
   selectAllBox.setAttribute('aria-checked', all ? 'true' : some ? 'mixed' : 'false');
 
-  continueBtn.disabled = ids.length === 0;
-  continueBtn.textContent = 'Continue with Slides (' + ids.length + ')';
+  setButton(continueBtn, {
+    disabled: ids.length === 0,
+    label: 'Continue with Slides (' + ids.length + ')',
+  });
 }
 
 selectAllBox.innerHTML = tickMarkup() + dashMarkup();
@@ -490,9 +529,12 @@ async function finishExport(exportErrors: string[]) {
 }
 
 function setExporting(busy: boolean) {
-  exportBtn.disabled = busy;
-  exportBtn.textContent = busy ? 'Exporting…' : 'Export';
-  progressEl.style.display = busy ? 'block' : 'none';
+  setButton(exportBtn, {
+    busy: busy,
+    disabled: busy,
+    label: busy ? 'Preparing…' : 'Export',
+    progress: 0,
+  });
   mergeToggle.disabled = busy;
   compressToggle.disabled = busy;
 }
@@ -546,9 +588,12 @@ window.onmessage = async (event: MessageEvent) => {
       if (msg.reason === 'selection' && incoming.length === 0 && frames.length > 0) break;
 
       frames = incoming;
-      // Default to everything selected — the common case is "export this section".
+      // Every slide on the page is listed. A canvas selection only decides what
+      // starts ticked; with nothing selected the deck is shown untouched so the
+      // plugin never opens on an empty screen.
+      const preselected = (msg.selected as string[]) || [];
       picked = {};
-      frames.forEach(f => { picked[f.id] = true; });
+      preselected.forEach(id => { picked[id] = true; });
       if (screen === 'picker') renderPicker();
       break;
     }
@@ -578,15 +623,20 @@ window.onmessage = async (event: MessageEvent) => {
       usedNames = {};
       failures = [];
       lastDownloadAt = 0;
-      progressBar.style.width = '0%';
+      setButton(exportBtn, { busy: true, progress: 0 });
       if (mergeMode) mergedDoc = await PDFDocument.create();
       break;
     }
 
     case 'EXPORT_PROGRESS': {
-      const pct = Math.round(((msg.current as number) / (msg.total as number)) * 100);
-      progressBar.style.width = pct + '%';
-      setStatus('Exporting ' + msg.current + ' of ' + msg.total + ' — "' + msg.name + '"');
+      const current = msg.current as number;
+      const total = msg.total as number;
+      setButton(exportBtn, {
+        busy: true,
+        progress: current / total,
+        label: 'Exporting ' + current + ' of ' + total,
+      });
+      setStatus('Rendering "' + msg.name + '"');
       break;
     }
 
@@ -602,7 +652,7 @@ window.onmessage = async (event: MessageEvent) => {
     }
 
     case 'EXPORT_DONE': {
-      setStatus('Building PDF…');
+      setButton(exportBtn, { busy: true, progress: 1, label: 'Building PDF…' });
       try {
         await finishExport((msg.errors as string[]) || []);
       } catch (err) {

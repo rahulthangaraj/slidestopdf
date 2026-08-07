@@ -200,6 +200,8 @@
     }
 
     .btn-primary {
+      position: relative;
+      overflow: hidden;
       background: var(--brand);
       border: 1px solid var(--brand-border);
       color: #fff;
@@ -208,12 +210,53 @@
       font-size: 15px;
       letter-spacing: -0.225px;
       line-height: 1;
-      display: inline-flex; align-items: center; justify-content: center; gap: 4px;
-      transition: background .12s;
+      display: inline-flex; align-items: center; justify-content: center;
+      transition: background .18s ease, opacity .18s ease, transform .1s ease, box-shadow .18s ease;
     }
-    .btn-primary:hover:not(:disabled) { background: var(--brand-hover); }
-    .btn-primary:active:not(:disabled) { background: var(--brand-active); }
+    .btn-primary:hover:not(:disabled) { background: var(--brand-hover); box-shadow: 0 1px 6px rgba(10,120,255,.28); }
+    .btn-primary:active:not(:disabled) { background: var(--brand-active); transform: translateY(1px); box-shadow: none; }
     .btn-primary:disabled { opacity: .45; }
+    .btn-primary:focus-visible { outline: 2px solid var(--brand-border); outline-offset: 2px; }
+
+    /* The button carries its own progress: a fill sweeps across it rather than a
+       separate bar appearing elsewhere, so nothing shifts when work starts. */
+    .btn-fill {
+      position: absolute;
+      left: 0; top: 0; bottom: 0;
+      width: 0;
+      background: rgba(255,255,255,.22);
+      transition: width .3s ease, opacity .25s ease;
+      opacity: 0;
+      pointer-events: none;
+    }
+    .btn-primary.is-busy .btn-fill { opacity: 1; }
+
+    .btn-content {
+      position: relative;
+      display: inline-flex; align-items: center; justify-content: center;
+      min-width: 0;
+    }
+
+    /* Spinner slides in from zero width, so the label glides across instead of
+       jumping when the state flips. */
+    .btn-spinner {
+      width: 0; height: 14px;
+      flex-shrink: 0;
+      opacity: 0;
+      overflow: hidden;
+      transition: width .22s ease, opacity .22s ease, margin-right .22s ease;
+      margin-right: 0;
+    }
+    .btn-primary.is-busy .btn-spinner { width: 14px; opacity: 1; margin-right: 7px; }
+    .btn-spinner svg { width: 14px; height: 14px; animation: spin .75s linear infinite; }
+    .btn-spinner circle { opacity: .35; }
+    .btn-spinner path { opacity: 1; }
+
+    .btn-label {
+      white-space: nowrap;
+      transition: opacity .16s ease;
+    }
+    .btn-primary.is-swapping .btn-label { opacity: 0; }
 
     /* ══════════════════════════════════════════════
        Screen 2 — editor
@@ -340,10 +383,6 @@
     .rail-actions { padding: 16px; display: flex; flex-direction: column; gap: 10px; }
     .rail-actions .btn-primary { width: 100%; }
 
-    .progress { padding: 0 16px; }
-    .progress-track { height: 3px; border-radius: 3px; background: var(--bg-subtle); overflow: hidden; }
-    .progress-bar { height: 100%; width: 0; background: var(--brand); border-radius: 3px; transition: width .25s ease; }
-
     .status {
       padding: 0 16px 16px;
       font-size: 11px; color: var(--text-muted);
@@ -410,7 +449,10 @@
     </div>
 
     <div class="footer">
-      <button class="btn-primary" id="continue-btn" disabled>Continue with Slides (0)</button>
+      <button class="btn-primary" id="continue-btn" disabled>
+        <span class="btn-fill"></span>
+        <span class="btn-content"><span class="btn-spinner"></span><span class="btn-label">Continue with Slides (0)</span></span>
+      </button>
     </div>
   </section>
 
@@ -452,11 +494,10 @@
       </div>
 
       <div class="rail-actions">
-        <button class="btn-primary" id="export-btn">Export</button>
-      </div>
-
-      <div class="progress" id="progress" style="display:none">
-        <div class="progress-track"><div class="progress-bar" id="progress-bar"></div></div>
+        <button class="btn-primary" id="export-btn">
+          <span class="btn-fill"></span>
+          <span class="btn-content"><span class="btn-spinner"></span><span class="btn-label">Export</span></span>
+        </button>
       </div>
 
       <div class="status" id="status"></div>
