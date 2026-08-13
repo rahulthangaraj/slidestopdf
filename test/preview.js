@@ -156,14 +156,55 @@ async function main() {
   const stageItems = await page.locator('.stage-item').count();
   const editorVisible = await page.locator('#screen-editor').isVisible();
 
-  // Busy button: spinner opens, fill tracks progress, layout does not shift.
+  const names = () => page.locator('.frame-row .lbl').allInnerTexts();
+  const order0 = await names();
+
+  // Right-click menu: first row cannot move up, "Move down" reorders.
+  await page.locator('.frame-row').nth(0).click({ button: 'right' });
+  await page.waitForTimeout(200);
+  const menuOpen = await page.locator('#row-menu').isVisible();
+  const upDisabled = await page.locator('#menu-up').isDisabled();
+  await page.screenshot({ path: path.join(outDir, '5-context-menu.png') });
+  await page.locator('#menu-down').click();
+  await page.waitForTimeout(250);
+  const orderAfterMenu = await names();
+  const menuClosed = !(await page.locator('#row-menu').isVisible());
+
+  // Remove via the menu.
+  const beforeRemove = (await names()).length;
+  await page.locator('.frame-row').nth(2).click({ button: 'right' });
+  await page.waitForTimeout(150);
+  await page.locator('#menu-remove').click();
+  await page.waitForTimeout(250);
+  const afterRemove = (await names()).length;
+
+  // Pointer drag: grab row 0's grip and pull it down past two rows.
+  const orderBeforeDrag = await names();
+  const g = await page.locator('.frame-row').nth(0).locator('.grip').boundingBox();
+  const rowA = await page.locator('.frame-row').nth(0).boundingBox();
+  const rowB = await page.locator('.frame-row').nth(1).boundingBox();
+  const step = rowB.y - rowA.y;
+  await page.mouse.move(g.x + g.width / 2, g.y + g.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(g.x + g.width / 2, g.y + g.height / 2 + step * 0.6, { steps: 6 });
+  const liftedDuring = await page.locator('.frame-row.lifted').count();
+  await page.mouse.move(g.x + g.width / 2, g.y + g.height / 2 + step * 2.2, { steps: 10 });
+  await page.mouse.up();
+  await page.waitForTimeout(300);
+  const orderAfterDrag = await names();
+  const liftedAfter = await page.locator('.frame-row.lifted').count();
+
+  // Busy button: spinner opens, layout does not shift. The count is derived —
+  // the menu/drag steps above change how many slides remain.
+  const slidesAtExport = (await names()).length;
+  const wantBusyLabel = 'Exporting ' + Math.ceil(slidesAtExport / 2) + ' of ' + slidesAtExport;
   const beforeBox = await page.locator('#export-btn').boundingBox();
   await page.locator('#export-btn').click();
   await page.waitForTimeout(500);
   const busyLabel = await page.locator('#export-btn .btn-label').innerText();
   const busySpinnerW = await page.locator('#export-btn .btn-spinner').evaluate(n => n.getBoundingClientRect().width);
-  const fillPct = await page.locator('#export-btn .btn-fill').evaluate(
-    n => Math.round((n.getBoundingClientRect().width / n.parentElement.getBoundingClientRect().width) * 100));
+  const hasFill = await page.locator('#export-btn .btn-fill').count();
+  const labelPx = await page.locator('#export-btn .btn-label').evaluate(n => getComputedStyle(n).fontSize);
   const afterBox = await page.locator('#export-btn').boundingBox();
   const shifted = Math.abs(beforeBox.y - afterBox.y) > 0.5 || Math.abs(beforeBox.height - afterBox.height) > 0.5;
   await page.screenshot({ path: path.join(outDir, '4-export-busy.png') });
@@ -172,10 +213,20 @@ async function main() {
 
   console.log('CTA on load (3 preselected): ' + ctaOnLoad);
   console.log('idle spinner width         : ' + idleSpinnerW + 'px (want 0)');
-  console.log('busy label                 : ' + busyLabel);
+  console.log('busy label                 : ' + busyLabel + ' (want ' + wantBusyLabel + ')');
   console.log('busy spinner width         : ' + busySpinnerW + 'px (want 14)');
-  console.log('progress fill              : ' + fillPct + '% (want ~60, 1px border skews it)');
+  console.log('progress fill elements     : ' + hasFill + ' (want 0 — removed)');
+  console.log('busy label font-size       : ' + labelPx + ' (want 15px, same as idle)');
   console.log('button shifted on busy     : ' + shifted + ' (want false)');
+  console.log('');
+  console.log('context menu opens         : ' + menuOpen);
+  console.log('  first row Move up disabled: ' + upDisabled);
+  console.log('  Move down reordered       : ' + (orderAfterMenu[0] === order0[1] && orderAfterMenu[1] === order0[0]));
+  console.log('  menu closed after action  : ' + menuClosed);
+  console.log('  Remove dropped a row      : ' + (afterRemove === beforeRemove - 1));
+  console.log('drag lifted class during   : ' + liftedDuring + ' (want 1)');
+  console.log('  drag reordered            : ' + (orderAfterDrag[0] !== orderBeforeDrag[0]));
+  console.log('  lifted cleaned up after   : ' + (liftedAfter === 0));
 
   console.log('CTA after ticking 2 more: ' + cta);
   console.log('select-all aria-checked : ' + allState);
@@ -189,8 +240,13 @@ async function main() {
   const ok = ctaOnLoad === 'Continue with Slides (3)' && idleSpinnerW === 0 &&
              cta === 'Continue with Slides (5)' && allState === 'mixed' &&
              editorVisible && rows === 5 && stageItems === 5 &&
-             busyLabel === 'Exporting 3 of 5' && Math.round(busySpinnerW) === 14 &&
-             Math.abs(fillPct - 60) <= 2 && shifted === false &&
+             menuOpen && upDisabled && menuClosed &&
+             orderAfterMenu[0] === order0[1] && orderAfterMenu[1] === order0[0] &&
+             afterRemove === beforeRemove - 1 &&
+             liftedDuring === 1 && liftedAfter === 0 &&
+             orderAfterDrag[0] !== orderBeforeDrag[0] &&
+             busyLabel === wantBusyLabel && Math.round(busySpinnerW) === 14 &&
+             hasFill === 0 && labelPx === '15px' && shifted === false &&
              logs.filter(l => /error/i.test(l)).length === 0;
   console.log(ok ? '\nOK' : '\nMISMATCH');
   if (!ok) process.exitCode = 1;

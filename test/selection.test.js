@@ -34,6 +34,7 @@ function run(label, pageChildren, selection) {
     },
     getNodeByIdAsync: async () => null,
     ui: {
+      reposition() {},
       postMessage: (m) => posted.push(m),
       set onmessage(fn) { onmessage = fn; },
       get onmessage() { return onmessage; },

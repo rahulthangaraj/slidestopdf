@@ -7,6 +7,10 @@ figma.showUI(__html__, {
   height: 720,
 });
 
+// Figma remembers where the window was last dragged, so a fresh run can open
+// off to one side. (0, 0) is the centre of the Figma window.
+figma.ui.reposition(0, 0);
+
 interface FrameInfo {
   id: string;
   name: string;
@@ -366,6 +370,19 @@ figma.ui.onmessage = async (msg: UIMessage) => {
     case 'EXPORT_ABORT': {
       cancelled.export = true;
       resolveAck('export');
+      break;
+    }
+
+    // The UI iframe cannot open a mailto: itself — the sandbox has to do it.
+    case 'FEEDBACK': {
+      const subject = encodeURIComponent('Slides to PDF — feedback');
+      const body = encodeURIComponent(
+        'What would you like to see, or what went wrong?\n\n\n' +
+        '---\nFigma ' + figma.editorType + ', plugin API ' + figma.apiVersion + '\n'
+      );
+      figma.openExternal(
+        'mailto:rahulthangaraj.info@gmail.com?subject=' + subject + '&body=' + body
+      );
       break;
     }
 

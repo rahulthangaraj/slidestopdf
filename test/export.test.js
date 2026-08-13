@@ -25,6 +25,7 @@ function setup(frames, opts = {}) {
       };
     },
     ui: {
+      reposition() {},
       postMessage: (m) => {
         posted.push(m);
         if (m.type === 'FRAME_DATA') {

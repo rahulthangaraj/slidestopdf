@@ -20,7 +20,6 @@ let picked: { [id: string]: true } = {};
 let slides: Frame[] = [];
 
 let screen: 'picker' | 'editor' = 'picker';
-let dragSrcIndex: number | null = null;
 
 const THUMB_WIDTH = 440;    // 2x the 222px card, for retina
 const PREVIEW_WIDTH = 1400; // large centre pane
@@ -89,31 +88,39 @@ const SPINNER =
 interface ButtonState {
   label?: string;
   busy?: boolean;
-  progress?: number; // 0..1
   disabled?: boolean;
 }
 
-function setButton(btn: HTMLButtonElement, state: ButtonState) {
-  const labelEl = btn.querySelector('.btn-label') as HTMLElement;
-  const fillEl = btn.querySelector('.btn-fill') as HTMLElement;
-  const spinEl = btn.querySelector('.btn-spinner') as HTMLElement;
+// Label writes are coalesced to one per frame. An export posts progress far
+// faster than the screen refreshes, and writing text on every message is what
+// made the button look like it was stuttering rather than working.
+const pendingLabel = new WeakMap<HTMLElement, string>();
+let labelFlushQueued = false;
 
+function flushLabels() {
+  labelFlushQueued = false;
+  for (const btn of [continueBtn, exportBtn]) {
+    const next = pendingLabel.get(btn);
+    if (next === undefined) continue;
+    pendingLabel.delete(btn);
+    const labelEl = btn.querySelector('.btn-label') as HTMLElement;
+    if (labelEl && labelEl.textContent !== next) labelEl.textContent = next;
+  }
+}
+
+function setButton(btn: HTMLButtonElement, state: ButtonState) {
+  const spinEl = btn.querySelector('.btn-spinner') as HTMLElement;
   if (spinEl && !spinEl.innerHTML) spinEl.innerHTML = SPINNER;
 
   if (state.busy !== undefined) btn.classList.toggle('is-busy', state.busy);
   if (state.disabled !== undefined) btn.disabled = state.disabled;
-  if (state.progress !== undefined && fillEl) {
-    fillEl.style.width = Math.max(0, Math.min(1, state.progress)) * 100 + '%';
-  }
 
-  if (state.label !== undefined && labelEl && labelEl.textContent !== state.label) {
-    // Cross-fade rather than snapping, so a counter ticking up reads as one
-    // continuous action instead of flickering text.
-    btn.classList.add('is-swapping');
-    window.setTimeout(() => {
-      labelEl.textContent = state.label as string;
-      btn.classList.remove('is-swapping');
-    }, 110);
+  if (state.label !== undefined) {
+    pendingLabel.set(btn, state.label);
+    if (!labelFlushQueued) {
+      labelFlushQueued = true;
+      requestAnimationFrame(flushLabels);
+    }
   }
 }
 
@@ -309,12 +316,128 @@ function renderEditor() {
   renderStage();
 }
 
+function moveSlide(from: number, to: number) {
+  if (from === to || from < 0 || to < 0 || from >= slides.length || to >= slides.length) return;
+  const moved = slides.splice(from, 1)[0];
+  slides.splice(to, 0, moved);
+  renderEditor();
+}
+
+function removeSlide(index: number) {
+  if (index < 0 || index >= slides.length) return;
+  slides.splice(index, 1);
+  if (slides.length === 0) { showScreen('picker'); return; }
+  renderEditor();
+}
+
+/* ── Right-click menu ── */
+
+const rowMenu = $('row-menu');
+const menuUp = $('menu-up') as HTMLButtonElement;
+const menuDown = $('menu-down') as HTMLButtonElement;
+const menuRemove = $('menu-remove') as HTMLButtonElement;
+let menuIndex = -1;
+
+function openMenu(index: number, x: number, y: number) {
+  menuIndex = index;
+  menuUp.disabled = index <= 0;
+  menuDown.disabled = index >= slides.length - 1;
+
+  rowMenu.classList.add('open');
+  // Measure after showing, then nudge back inside the window if it would clip.
+  const rect = rowMenu.getBoundingClientRect();
+  const left = Math.min(x, window.innerWidth - rect.width - 8);
+  const top = Math.min(y, window.innerHeight - rect.height - 8);
+  rowMenu.style.left = Math.max(8, left) + 'px';
+  rowMenu.style.top = Math.max(8, top) + 'px';
+}
+
+function closeMenu() {
+  rowMenu.classList.remove('open');
+  menuIndex = -1;
+}
+
+menuUp.addEventListener('click', () => { const i = menuIndex; closeMenu(); moveSlide(i, i - 1); });
+menuDown.addEventListener('click', () => { const i = menuIndex; closeMenu(); moveSlide(i, i + 1); });
+menuRemove.addEventListener('click', () => { const i = menuIndex; closeMenu(); removeSlide(i); });
+
+document.addEventListener('pointerdown', (e) => {
+  if (rowMenu.classList.contains('open') && !rowMenu.contains(e.target as Node)) closeMenu();
+});
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeMenu(); });
+window.addEventListener('blur', closeMenu);
+
+/* ── Drag to reorder ──
+   Pointer-driven rather than HTML5 drag-and-drop. The native API gives a
+   browser-drawn ghost, no control over easing, and no way to show the gap
+   opening up — which is what made the old interaction feel dated. Here the
+   lifted row tracks the pointer exactly and its neighbours slide aside. */
+
+interface DragState {
+  index: number;
+  startY: number;
+  rows: HTMLElement[];
+  step: number;
+  target: number;
+}
+
+let drag: DragState | null = null;
+
+function beginDrag(e: PointerEvent, index: number, row: HTMLElement) {
+  const rows = Array.prototype.slice.call(frameList.children) as HTMLElement[];
+  if (rows.length < 2) return;
+
+  const step = rows.length > 1
+    ? rows[1].getBoundingClientRect().top - rows[0].getBoundingClientRect().top
+    : row.getBoundingClientRect().height;
+
+  drag = { index: index, startY: e.clientY, rows: rows, step: step, target: index };
+
+  row.classList.add('lifted');
+  row.setPointerCapture(e.pointerId);
+  rows.forEach((r, i) => { if (i !== index) r.classList.add('shifting'); });
+  closeMenu();
+}
+
+function updateDrag(e: PointerEvent) {
+  if (!drag) return;
+  const dy = e.clientY - drag.startY;
+  const row = drag.rows[drag.index];
+  row.style.transform = 'translateY(' + dy + 'px)';
+
+  const shift = Math.round(dy / drag.step);
+  const target = Math.max(0, Math.min(drag.rows.length - 1, drag.index + shift));
+  if (target === drag.target) return;
+  drag.target = target;
+
+  // Everything between the origin and the target slides one slot to make room.
+  drag.rows.forEach((r, i) => {
+    if (i === drag!.index) return;
+    let offset = 0;
+    if (drag!.index < target && i > drag!.index && i <= target) offset = -drag!.step;
+    else if (drag!.index > target && i >= target && i < drag!.index) offset = drag!.step;
+    r.style.transform = offset ? 'translateY(' + offset + 'px)' : '';
+  });
+}
+
+function endDrag(e: PointerEvent) {
+  if (!drag) return;
+  const { index, target, rows } = drag;
+  const row = rows[index];
+  try { row.releasePointerCapture(e.pointerId); } catch (err) { /* already released */ }
+
+  rows.forEach(r => { r.style.transform = ''; r.classList.remove('shifting', 'lifted'); });
+  drag = null;
+
+  if (target !== index) moveSlide(index, target);
+}
+
 function renderFrameList() {
   frameList.innerHTML = '';
 
   slides.forEach((frame, index) => {
     const row = el('div', 'frame-row');
-    row.draggable = false;
+    row.setAttribute('data-index', String(index));
 
     const grip = el('span', 'grip');
     setIcon(grip, 'grip-vertical', 16);
@@ -332,39 +455,25 @@ function renderFrameList() {
     row.appendChild(grip);
     row.appendChild(pill);
 
-    grip.addEventListener('mousedown', () => { row.draggable = true; });
-    grip.addEventListener('mouseup', () => { row.draggable = false; });
+    grip.addEventListener('pointerdown', (e) => {
+      if ((e as PointerEvent).button !== 0) return;
+      e.preventDefault();
+      beginDrag(e as PointerEvent, index, row);
+    });
+    row.addEventListener('pointermove', (e) => updateDrag(e as PointerEvent));
+    row.addEventListener('pointerup', (e) => endDrag(e as PointerEvent));
+    row.addEventListener('pointercancel', (e) => endDrag(e as PointerEvent));
+
+    row.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      openMenu(index, (e as MouseEvent).clientX, (e as MouseEvent).clientY);
+    });
 
     pill.addEventListener('click', () => {
       const target = stage.querySelector('[data-stage="' + frame.id + '"]');
       if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
       setActiveRow(frame.id);
       requestPreviews([frame.id], 'preview');
-    });
-
-    row.addEventListener('dragstart', (e) => {
-      dragSrcIndex = index;
-      row.classList.add('dragging');
-      if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
-    });
-    row.addEventListener('dragend', () => {
-      row.draggable = false;
-      row.classList.remove('dragging');
-      frameList.querySelectorAll('.frame-row').forEach(n => n.classList.remove('drag-over'));
-    });
-    row.addEventListener('dragover', (e) => {
-      e.preventDefault();
-      if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
-      frameList.querySelectorAll('.frame-row').forEach(n => n.classList.remove('drag-over'));
-      row.classList.add('drag-over');
-    });
-    row.addEventListener('drop', (e) => {
-      e.preventDefault();
-      if (dragSrcIndex === null || dragSrcIndex === index) return;
-      const moved = slides.splice(dragSrcIndex, 1)[0];
-      slides.splice(index, 0, moved);
-      dragSrcIndex = null;
-      renderEditor();
     });
 
     frameList.appendChild(row);
@@ -492,7 +601,15 @@ async function downloadFile(bytes: Uint8Array, filename: string) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+function nextFrame(): Promise<void> {
+  return new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+}
+
 async function consumeFrame(name: string, bytes: Uint8Array) {
+  // Let the browser paint before starting the next chunk of synchronous
+  // pdf-lib work, otherwise the spinner freezes on heavy decks.
+  await nextFrame();
+
   if (mergeMode) {
     const doc = await PDFDocument.load(bytes, { ignoreEncryption: true });
     const pages = await mergedDoc!.copyPages(doc, doc.getPageIndices());
@@ -512,7 +629,8 @@ async function finishExport(exportErrors: string[]) {
   let fileCount = 0;
 
   if (mergeMode) {
-    setStatus(compressMode ? 'Compressing merged PDF…' : 'Saving merged PDF…');
+    setStatus('');
+    await nextFrame();
     const bytes = await mergedDoc!.save({ useObjectStreams: compressMode });
     await downloadFile(bytes, 'slides.pdf');
     fileCount = 1;
@@ -533,7 +651,6 @@ function setExporting(busy: boolean) {
     busy: busy,
     disabled: busy,
     label: busy ? 'Preparing…' : 'Export',
-    progress: 0,
   });
   mergeToggle.disabled = busy;
   compressToggle.disabled = busy;
@@ -549,6 +666,8 @@ setIcon($('close-btn'), 'x', 20);
 setIcon($('back-btn'), 'arrow-left', 14);
 
 $('close-btn').addEventListener('click', () => post({ type: 'CLOSE' }));
+
+$('feedback-btn').addEventListener('click', () => post({ type: 'FEEDBACK' }));
 
 refreshBtn.addEventListener('click', () => {
   refreshBtn.classList.add('spinning');
@@ -570,7 +689,7 @@ exportBtn.addEventListener('click', () => {
   mergeMode = mergeToggle.checked;
   compressMode = compressToggle.checked;
   setExporting(true);
-  setStatus('Exporting frames from Figma…');
+  setStatus('');
   post({ type: 'EXPORT_FRAMES', frameIds: slides.map(f => f.id) });
 });
 
@@ -623,20 +742,15 @@ window.onmessage = async (event: MessageEvent) => {
       usedNames = {};
       failures = [];
       lastDownloadAt = 0;
-      setButton(exportBtn, { busy: true, progress: 0 });
       if (mergeMode) mergedDoc = await PDFDocument.create();
       break;
     }
 
     case 'EXPORT_PROGRESS': {
-      const current = msg.current as number;
-      const total = msg.total as number;
       setButton(exportBtn, {
         busy: true,
-        progress: current / total,
-        label: 'Exporting ' + current + ' of ' + total,
+        label: 'Exporting ' + msg.current + ' of ' + msg.total,
       });
-      setStatus('Rendering "' + msg.name + '"');
       break;
     }
 
@@ -652,7 +766,7 @@ window.onmessage = async (event: MessageEvent) => {
     }
 
     case 'EXPORT_DONE': {
-      setButton(exportBtn, { busy: true, progress: 1, label: 'Building PDF…' });
+      setButton(exportBtn, { busy: true, label: 'Building PDF…' });
       try {
         await finishExport((msg.errors as string[]) || []);
       } catch (err) {
