@@ -7,10 +7,6 @@ figma.showUI(__html__, {
   height: 720,
 });
 
-// Figma remembers where the window was last dragged, so a fresh run can open
-// off to one side. (0, 0) is the centre of the Figma window.
-figma.ui.reposition(0, 0);
-
 interface FrameInfo {
   id: string;
   name: string;

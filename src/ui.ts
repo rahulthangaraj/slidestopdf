@@ -20,6 +20,8 @@ let picked: { [id: string]: true } = {};
 let slides: Frame[] = [];
 
 let screen: 'picker' | 'editor' = 'picker';
+let firstLoad = true;
+let isRefresh = false;
 
 const THUMB_WIDTH = 440;    // 2x the 222px card, for retina
 const PREVIEW_WIDTH = 1400; // large centre pane
@@ -228,7 +230,7 @@ function renderPicker() {
   pickerBody.style.display = has ? 'flex' : 'none';
   pickerEmpty.style.display = has ? 'none' : 'flex';
   hintText.textContent = has
-    ? frames.length + ' frame' + (frames.length !== 1 ? 's' : '') + ' found in your selection'
+    ? frames.length + ' frame' + (frames.length !== 1 ? 's' : '') + ' on this page — pick the slides to export'
     : 'Select frames from Figma layers to proceed';
 
   cardGrid.innerHTML = '';
@@ -662,17 +664,30 @@ function setExporting(busy: boolean) {
 
 setIcon($('hint-icon'), 'mouse-pointer-click', 20);
 setIcon(refreshBtn, 'refresh-ccw', 12);
-setIcon($('close-btn'), 'x', 20);
 setIcon($('back-btn'), 'arrow-left', 14);
-
-$('close-btn').addEventListener('click', () => post({ type: 'CLOSE' }));
+setIcon($('feedback-icon'), 'mouse-pointer-click', 14);
 
 $('feedback-btn').addEventListener('click', () => post({ type: 'FEEDBACK' }));
 
+// Refresh re-scans the page for frames added or deleted since the plugin
+// opened. Selection changes arrive on their own, so without a rescan this
+// button looked inert. The spin is held briefly because the round trip is
+// usually instant and an imperceptible flicker reads as "nothing happened".
+const REFRESH_SPIN_MS = 550;
+let refreshStartedAt = 0;
+
 refreshBtn.addEventListener('click', () => {
   refreshBtn.classList.add('spinning');
+  refreshStartedAt = Date.now();
+  isRefresh = true;
   post({ type: 'GET_FRAMES' });
 });
+
+function stopRefreshSpin() {
+  const elapsed = Date.now() - refreshStartedAt;
+  const wait = Math.max(0, REFRESH_SPIN_MS - elapsed);
+  window.setTimeout(() => refreshBtn.classList.remove('spinning'), wait);
+}
 
 continueBtn.addEventListener('click', () => {
   const ids = pickedIds();
@@ -700,19 +715,35 @@ window.onmessage = async (event: MessageEvent) => {
   switch (msg.type) {
 
     case 'FRAMES_LIST': {
-      refreshBtn.classList.remove('spinning');
       const incoming = (msg.frames as Frame[]) || [];
-      // Don't discard a curated picker state when the canvas selection is simply
-      // cleared. Refresh always re-syncs.
-      if (msg.reason === 'selection' && incoming.length === 0 && frames.length > 0) break;
-
-      frames = incoming;
-      // Every slide on the page is listed. A canvas selection only decides what
-      // starts ticked; with nothing selected the deck is shown untouched so the
-      // plugin never opens on an empty screen.
       const preselected = (msg.selected as string[]) || [];
-      picked = {};
-      preselected.forEach(id => { picked[id] = true; });
+
+      // Don't discard a curated picker state when the canvas selection is
+      // simply cleared.
+      if (msg.reason === 'selection' && incoming.length === 0 && frames.length > 0) {
+        stopRefreshSpin();
+        break;
+      }
+
+      if (isRefresh && !firstLoad) {
+        // A rescan picks up frames added or deleted on the canvas. Ticks the
+        // user already made are kept for every frame that still exists.
+        const kept: { [id: string]: true } = {};
+        incoming.forEach(f => { if (picked[f.id]) kept[f.id] = true; });
+        frames = incoming;
+        picked = kept;
+        if (Object.keys(picked).length === 0) preselected.forEach(id => { picked[id] = true; });
+      } else {
+        // Every slide on the page is listed. The canvas selection only decides
+        // what starts ticked, so the plugin never opens on an empty screen.
+        frames = incoming;
+        picked = {};
+        preselected.forEach(id => { picked[id] = true; });
+      }
+
+      isRefresh = false;
+      firstLoad = false;
+      stopRefreshSpin();
       if (screen === 'picker') renderPicker();
       break;
     }

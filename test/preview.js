@@ -136,6 +136,12 @@ async function main() {
 
   await page.screenshot({ path: path.join(outDir, '1-picker.png') });
 
+  const hasOwnHeader = await page.locator('.header').count();
+  const footerBox = await page.locator('.footer').boundingBox();
+  const vp = page.viewportSize();
+  const footerPinned = Math.abs((footerBox.y + footerBox.height) - vp.height) < 1.5;
+  const pageScrolls = await page.evaluate(() => document.documentElement.scrollHeight > window.innerHeight + 1);
+
   const ctaOnLoad = await page.locator('#continue-btn .btn-label').innerText();
   const idleSpinnerW = await page.locator('#continue-btn .btn-spinner').evaluate(n => n.getBoundingClientRect().width);
 
@@ -205,12 +211,17 @@ async function main() {
   const busySpinnerW = await page.locator('#export-btn .btn-spinner').evaluate(n => n.getBoundingClientRect().width);
   const hasFill = await page.locator('#export-btn .btn-fill').count();
   const labelPx = await page.locator('#export-btn .btn-label').evaluate(n => getComputedStyle(n).fontSize);
+  const busyDisabled = await page.locator('#export-btn').isDisabled();
   const afterBox = await page.locator('#export-btn').boundingBox();
   const shifted = Math.abs(beforeBox.y - afterBox.y) > 0.5 || Math.abs(beforeBox.height - afterBox.height) > 0.5;
   await page.screenshot({ path: path.join(outDir, '4-export-busy.png') });
 
   await browser.close();
 
+  console.log('own header elements        : ' + hasOwnHeader + ' (want 0 — Figma draws one)');
+  console.log('action bar pinned to bottom: ' + footerPinned);
+  console.log('picker page scrolls        : ' + pageScrolls + ' (want false)');
+  console.log('busy button disabled       : ' + busyDisabled + ' (want true)');
   console.log('CTA on load (3 preselected): ' + ctaOnLoad);
   console.log('idle spinner width         : ' + idleSpinnerW + 'px (want 0)');
   console.log('busy label                 : ' + busyLabel + ' (want ' + wantBusyLabel + ')');
@@ -237,7 +248,8 @@ async function main() {
   logs.filter(l => /error/i.test(l)).forEach(l => console.log('   ' + l));
   console.log('\nshots → ' + outDir);
 
-  const ok = ctaOnLoad === 'Continue with Slides (3)' && idleSpinnerW === 0 &&
+  const ok = hasOwnHeader === 0 && footerPinned && !pageScrolls && busyDisabled &&
+             ctaOnLoad === 'Continue with Slides (3)' && idleSpinnerW === 0 &&
              cta === 'Continue with Slides (5)' && allState === 'mixed' &&
              editorVisible && rows === 5 && stageItems === 5 &&
              menuOpen && upDisabled && menuClosed &&

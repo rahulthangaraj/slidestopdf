@@ -45,6 +45,10 @@
     html, body { height: 100%; }
 
     body {
+      /* Pinned to the viewport rather than sized by inheritance, so the action
+         bar stays fixed at the bottom no matter how the host sizes the frame. */
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
       font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       font-size: 12px;
       color: var(--text);
@@ -59,25 +63,6 @@
 
     button { font-family: inherit; cursor: pointer; border: none; background: none; color: inherit; }
     button:disabled { cursor: not-allowed; }
-
-    /* ── Header ── */
-    .header {
-      height: var(--header-h);
-      flex-shrink: 0;
-      background: var(--bg-header);
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 0 16px;
-    }
-    .brand-name { font-size: 12px; font-weight: 500; color: #fff; letter-spacing: -0.1px; }
-    .header-close {
-      width: 20px; height: 20px; color: #fff; opacity: .85;
-      display: flex; align-items: center; justify-content: center;
-      border-radius: var(--radius-sm);
-      transition: background .12s, opacity .12s;
-    }
-    .header-close:hover { opacity: 1; background: rgba(255,255,255,.12); }
 
     /* ── Screen plumbing ── */
     .screen { flex: 1; min-height: 0; display: none; }
@@ -121,7 +106,7 @@
     }
     .icon-btn:hover:not(:disabled) { background: var(--bg-subtle); border-color: #dcdcdc; }
     .icon-btn:disabled { opacity: .45; }
-    .icon-btn.spinning svg { animation: spin .7s linear infinite; }
+    .icon-btn.spinning svg { animation: spin .7s linear infinite; will-change: transform; }
     @keyframes spin { to { transform: rotate(-360deg); } }
 
     .picker-body { display: flex; flex-direction: column; gap: 12px; }
@@ -215,7 +200,13 @@
     .btn-primary:active:not(:disabled) { background: var(--brand-active); transform: translateY(1px); box-shadow: none; }
     .btn-primary:disabled { opacity: .5; }
     .btn-primary:focus-visible { outline: 2px solid var(--brand-border); outline-offset: 2px; }
-    .btn-primary.is-busy { opacity: 1; background: var(--brand); }
+    .btn-primary.is-busy {
+      background: #7fb6ff;
+      border-color: #7fb6ff;
+      box-shadow: none;
+      cursor: not-allowed;
+      transform: none;
+    }
 
     .btn-content {
       display: inline-flex; align-items: center; justify-content: center;
@@ -231,7 +222,14 @@
       margin-right: 0;
     }
     .btn-primary.is-busy .btn-spinner { width: 14px; opacity: 1; margin-right: 8px; }
-    .btn-spinner svg { width: 14px; height: 14px; animation: spin .75s linear infinite; }
+    .btn-spinner svg {
+      width: 14px; height: 14px;
+      animation: spin .75s linear infinite;
+      /* Promoted so Chromium runs the rotation on the compositor. pdf-lib's
+         merge and save block the main thread for seconds at a time; without
+         this the spinner stops dead exactly when it matters most. */
+      will-change: transform;
+    }
     .btn-spinner circle { opacity: .35; }
 
     .btn-label {
@@ -403,15 +401,26 @@
     .status.error   { color: var(--danger); }
     .status.success { color: var(--success); }
 
-    .rail-foot { margin-top: auto; padding: 12px 16px 16px; }
+    .rail-foot {
+      margin-top: auto;
+      padding: 12px;
+      border-top: 1px solid var(--divider);
+      flex-shrink: 0;
+    }
     .link-btn {
-      font-size: 11px; color: var(--text-muted);
-      display: inline-flex; align-items: center; gap: 6px;
-      padding: 4px 0;
-      transition: color .12s;
+      width: 100%;
+      font-size: 12px; color: var(--text);
+      display: flex; align-items: center; gap: 8px;
+      padding: 9px 10px;
+      border-radius: var(--radius-md);
+      border: 1px solid var(--border);
+      background: var(--bg-surface);
+      transition: background .12s, border-color .12s, color .12s;
       text-align: left;
     }
-    .link-btn:hover { color: var(--brand); }
+    .link-btn svg { color: var(--text-muted); transition: color .12s; }
+    .link-btn:hover { background: var(--sel-card-bg); border-color: var(--sel-card-br); color: var(--brand); }
+    .link-btn:hover svg { color: var(--brand); }
 
     /* ── Context menu ── */
     .menu {
@@ -460,11 +469,6 @@
   </style>
 </head>
 <body>
-
-  <header class="header">
-    <span class="brand-name">Slides to PDF</span>
-    <button class="header-close" id="close-btn" title="Close plugin" aria-label="Close plugin"></button>
-  </header>
 
   <!-- ── Screen 1: pick slides ── -->
   <section class="screen active" id="screen-picker">
@@ -548,7 +552,7 @@
       <div class="status" id="status"></div>
 
       <div class="rail-foot">
-        <button class="link-btn" id="feedback-btn">Request a feature or report a bug</button>
+        <button class="link-btn" id="feedback-btn"><span id="feedback-icon"></span>Feedback or bug report</button>
       </div>
     </aside>
 
